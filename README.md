@@ -11,7 +11,7 @@ A web-based search engine built with Node.js, implementing a full crawl-index-se
 
 ```bash
 git clone <repository-url>
-cd SearchSpider
+cd SearchScript
 npm install
 ```
 
