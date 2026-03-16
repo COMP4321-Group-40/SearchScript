@@ -1,0 +1,16 @@
+# IDE
+.classpath
+.project
+.settings/
+
+# Node
+node_modules/
+
+# Maven/Java
+target/
+
+# Data
+data/
+
+# OS
+.DS_Store

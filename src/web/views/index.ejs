@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header & Search Form -->
+    <header class="header">
+      <h1 class="logo">COMP4321 Search</h1>
+      <form action="/search" method="GET" class="search-form">
+        <div class="search-box">
+          <input 
+            type="text" 
+            name="q" 
+            value="<%= query %>" 
+            placeholder="Enter search terms... (use &quot;quotes&quot; for phrases)"
+            class="search-input"
+            autofocus
+          >
+          <button type="submit" class="search-btn">Search</button>
+        </div>
+      </form>
+    </header>
+
+    <!-- Error -->
+    <% if (error) { %>
+      <div class="error"><%= error %></div>
+    <% } %>
+
+    <!-- Results -->
+    <% if (results !== null) { %>
+      <div class="results-info">
+        Found <strong><%= resultCount %></strong> result<%= resultCount !== 1 ? 's' : '' %> 
+        for "<strong><%= query %></strong>" 
+        (<%= searchTime %>ms)
+      </div>
+
+      <% if (results.length === 0) { %>
+        <div class="no-results">
+          <p>No results found.</p>
+          <p class="hint">Try different keywords or use "quotes" for phrase search.</p>
+        </div>
+      <% } %>
+
+      <% results.forEach(function(result, idx) { %>
+        <div class="result-item">
+          <div class="result-header">
+            <span class="result-rank"><%= idx + 1 %>.</span>
+            <span class="result-score" title="Relevance score"><%= result.score %></span>
+          </div>
+          
+          <h2 class="result-title">
+            <a href="<%= result.url %>" target="_blank" rel="noopener"><%= result.title %></a>
+          </h2>
+          
+          <div class="result-url"><%= result.url %></div>
+          
+          <div class="result-meta">
+            <span>Last modified: <%= result.lastModifiedFormatted %></span>
+            <span>Size: <%= result.size %> words</span>
+          </div>
+
+          <% if (result.keywords && result.keywords.length > 0) { %>
+            <div class="result-keywords">
+              <% result.keywords.forEach(function(kw) { %>
+                <span class="keyword"><%= kw.word %> <small><%= kw.freq %></small></span>
+              <% }); %>
+            </div>
+          <% } %>
+
+          <% if (result.parentUrls && result.parentUrls.length > 0) { %>
+            <div class="result-links">
+              <strong>Parent links:</strong>
+              <ul>
+                <% result.parentUrls.forEach(function(url) { %>
+                  <li><a href="<%= url %>" target="_blank" rel="noopener"><%= url %></a></li>
+                <% }); %>
+              </ul>
+            </div>
+          <% } %>
+
+          <% if (result.childUrls && result.childUrls.length > 0) { %>
+            <div class="result-links">
+              <strong>Child links:</strong>
+              <ul>
+                <% result.childUrls.forEach(function(url) { %>
+                  <li><a href="<%= url %>" target="_blank" rel="noopener"><%= url %></a></li>
+                <% }); %>
+              </ul>
+            </div>
+          <% } %>
+        </div>
+      <% }); %>
+    <% } %>
+  </div>
+</body>
+</html>
