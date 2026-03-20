@@ -1,0 +1,229 @@
+Test page
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
+2023-05-16 05:03:16, 35
+test 2; page 2; crawler 1; get 1; admiss 1; cse 1; depart 1; hkust 1; read 1; intern 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/news.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+CSE department of HKUST
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse.htm
+2023-05-16 05:03:16, 15
+cse 2; depart 2; hkust 2; admiss 2; pg 1; ug 1; main 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse/PG.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse/UG.htm
+-------------------------------------------------------------------------------
+
+News
+https://www.cse.ust.hk/~kwtleung/COMP4321/news.htm
+2023-05-16 05:03:16, 9
+new 4; bbc 1; cnn 1; main 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/news/bbc.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/news/cnn.htm
+-------------------------------------------------------------------------------
+
+books
+https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
+2023-05-16 05:03:16, 29
+book 2; articl 1; read 1; autom 1; keyword 1; classif 1; inform 1; retriev 1; gener 1; machin 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/books/book1.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/books/book2.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/books/book3.htm
+-------------------------------------------------------------------------------
+
+Movie Index Page
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+2023-05-16 05:09:22, 1028
+2004 33; 2002 26; 2003 24; 2000 24; 2001 19; 1996 12; season 12; 1997 10; 1999 10; 2005 10
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/1.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/2.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/3.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/4.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/5.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/6.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/7.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/8.html
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/9.html
+-------------------------------------------------------------------------------
+
+PG
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse/PG.htm
+2023-05-16 05:03:46, 387
+postgradu 9; program 8; admiss 8; comput 8; applic 7; scienc 7; requir 6; student 6; english 6; admit 5
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse.htm
+-------------------------------------------------------------------------------
+
+UG
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse/UG.htm
+2023-05-16 05:03:46, 437
+program 16; comput 13; scienc 7; student 7; studi 7; engin 6; univers 6; depart 5; hkust 5; train 5
+https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse.htm
+-------------------------------------------------------------------------------
+
+BBC news
+https://www.cse.ust.hk/~kwtleung/COMP4321/news/bbc.htm
+2023-05-16 05:03:44, 22
+new 3; bbc 2; fifth 1; nest 1; rare 1; bird 1; project 1; mp 1; urg 1; bt 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/news.htm
+-------------------------------------------------------------------------------
+
+CNN news
+https://www.cse.ust.hk/~kwtleung/COMP4321/news/cnn.htm
+2023-05-16 05:03:44, 18
+new 3; cnn 2; sauerkraut 1; capit 1; sweet 1; accordion 1; warm 1; caus 1; econom 1; chao 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/news.htm
+-------------------------------------------------------------------------------
+
+book1
+https://www.cse.ust.hk/~kwtleung/COMP4321/books/book1.htm
+2023-05-16 05:03:16, 215
+retriev 5; inform 3; descript 3; keyword 2; book 2; main 2; topic 2; relat 2; chapter 2; ratio 2
+https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
+-------------------------------------------------------------------------------
+
+book2
+https://www.cse.ust.hk/~kwtleung/COMP4321/books/book2.htm
+2023-05-16 05:03:16, 252
+data 11; base 9; inform 5; gener 4; consid 4; machin 3; readabl 3; bibliograph 3; retriev 3; chapter 2
+https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
+-------------------------------------------------------------------------------
+
+book3
+https://www.cse.ust.hk/~kwtleung/COMP4321/books/book3.htm
+2023-05-16 05:03:16, 248
+mathemat 6; relev 6; term 6; system 5; mean 3; book 2; report 2; inform 2; document 2; doctrin 2
+https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
+-------------------------------------------------------------------------------
+
+Dinosaur Planet (2003)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/1.html
+2023-05-16 05:03:16, 380
+dinosaur 27; search 14; planet 12; titl 12; tv 7; match 7; movi 6; giant 5; result 4; 2002 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Isle of Man TT 2004 Review (2004)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/2.html
+2023-05-16 05:03:26, 320
+search 14; 2004 11; review 11; titl 8; tt 7; isl 6; tv 5; movi 5; match 5; episod 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Character (1997)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/3.html
+2023-05-16 05:03:36, 427
+charact 39; search 14; titl 11; tv 6; match 6; aka 6; movi 5; studi 5; reveal 4; 1917 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Paula Abdul's Get Up and Dance (1994)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/4.html
+2023-05-16 05:03:38, 310
+search 14; danc 11; abdul 9; titl 9; paula 8; match 6; movi 5; tv 4; episod 4; 1994 3
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+The Rise and Fall of ECW (2004)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/5.html
+2023-05-16 05:03:38, 498
+rise 28; fall 28; search 14; titl 10; tv 9; ecw 8; movi 6; match 6; 2004 4; 2005 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Sick (1997)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/6.html
+2023-05-16 05:03:40, 628
+sick 71; search 14; titl 14; aka 14; tv 9; love 8; twist 6; anim 6; 1997 5; movi 5
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+8 Man (1992)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/7.html
+2023-05-16 05:03:40, 397
+search 14; titl 9; match 7; aka 7; tv 6; movi 5; 1992 4; result 4; vg 4; episod 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+What the #$*! Do We Know!? (2004)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/8.html
+2023-05-16 05:03:42, 539
+search 14; titl 14; aka 8; tv 6; 2004 5; movi 5; match 5; english 4; 2003 4; summer 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Class of Nuke 'Em High 2 (1991)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/9.html
+2023-05-16 05:03:44, 717
+nuke 9; em 9; rate 9; class 8; user 8; imdb 8; movi 7; subhumanoid 6; 1991 5; meltdown 5
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Fighter (2001)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/10.html
+2023-05-16 05:03:16, 1589
+fighter 226; aka 91; titl 56; street 53; vg 40; english 34; ii 21; search 15; tv 12; 2001 11
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Full Frame: Documentary Shorts (1999)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/11.html
+2023-05-16 05:03:18, 279
+search 14; short 9; titl 8; frame 7; documentari 7; movi 5; match 5; tv 4; episod 4; imdb 3
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+My Favorite Brunette (1947)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/12.html
+2023-05-16 05:03:18, 596
+movi 10; rate 10; user 8; imdb 8; favorit 7; brunett 6; 1947 6; comment 5; hope 5; cast 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Lord of the Rings: The Return of the King: Extended Edition: Bonus Material (2003)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/13.html
+2023-05-16 05:03:20, 344
+search 14; return 9; ring 8; king 8; lord 7; extend 7; edit 7; bonu 7; materi 7; titl 7
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Nature: Antarctica (1982)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/14.html
+2023-05-16 05:03:20, 383
+antarctica 21; search 14; titl 11; tv 8; aka 8; natur 7; antarct 7; match 6; movi 5; expedit 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Neil Diamond: Greatest Hits Live (1988)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/15.html
+2023-05-16 05:03:20, 521
+user 8; rate 8; imdb 8; neil 7; diamond 7; hit 6; 1988 6; movi 6; concert 6; live 5
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Screamers (1996)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/16.html
+2023-05-16 05:03:22, 410
+screamer 18; search 14; titl 13; aka 12; scream 8; match 7; movi 6; vg 5; tv 4; result 4
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+7 Seconds (2005)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/17.html
+2023-05-16 05:03:22, 386
+search 14; titl 9; aka 6; match 6; tv 5; movi 5; gone 5; result 4; episod 4; 2005 3
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
+Immortal Beloved (1994)
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie/18.html
+2023-05-16 05:03:24, 709
+movi 9; van 9; belov 8; user 8; rate 8; imdb 8; beethoven 7; immort 6; music 6; ludwig 6
+https://www.cse.ust.hk/~kwtleung/COMP4321/Movie.htm
+-------------------------------------------------------------------------------
+
