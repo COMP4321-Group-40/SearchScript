@@ -10,7 +10,7 @@ A web-based search engine built with Node.js, implementing a full crawl-index-se
 ## Installation
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/COMP4321-Group-40/SearchScript.git
 cd SearchScript
 npm install
 ```
@@ -19,15 +19,17 @@ npm install
 
 ### 1. Crawl and Index Pages
 
-Crawl 300 pages starting from the seed URL and build the search index:
+Crawl up to 300 pages starting from the seed URL and build the search index:
 
 ```bash
 npm run crawl
 ```
 
+The crawler uses incremental updates — pages already in the database are only re-fetched if the server reports a newer `last-modified` date.
+
 ### 2. Generate spider_result.txt
 
-Output indexed data to a plain-text file:
+Output all indexed pages to a plain-text file:
 
 ```bash
 npm run generate
@@ -47,9 +49,9 @@ Enter queries in the search box. Use `"quotes"` for phrase search (e.g., `"hong 
 
 ```
 src/
-├── config.js              # Configuration (URLs, limits, DB keys)
+├── config.js              # Configuration (URLs, limits, DB key prefixes)
 ├── crawler/
-│   ├── spider.js          # BFS crawler with HEAD check
+│   ├── spider.js          # BFS crawler with HEAD check and incremental updates
 │   └── pageProcessor.js   # HTML parsing (Cheerio)
 ├── indexer/
 │   ├── porterStemmer.js   # Porter Stemming Algorithm (from scratch)
@@ -76,13 +78,17 @@ The spider uses breadth-first search (BFS) to crawl web pages:
 
 1. **HEAD Request Check**: Before fetching a page, an HTTP HEAD request checks the `last-modified` header. If the page hasn't changed since the last crawl, the full GET request is skipped.
 
-2. **Visited Set**: A `Set` tracks all visited URLs to prevent re-processing and handle cyclic links.
+2. **Incremental Updates**: Existing pages are only re-fetched if their `last-modified` date is newer than the stored value. Stale inverted index entries are cleared before re-indexing.
 
-3. **Domain Restriction**: Only pages within the same domain as the seed URL are crawled.
+3. **Visited Set**: A `Set` tracks all visited URLs to prevent re-processing and handle cyclic links.
 
-4. **Page-ID Mapping**: Each URL is assigned a unique integer page ID. Two bidirectional tables (`URL_TO_ID` and `ID_TO_URL`) enable efficient lookups in both directions.
+4. **Domain Restriction**: Only pages within the same domain as the seed URL are crawled.
 
-5. **Rate Limiting**: A configurable delay (default 500ms) between requests prevents overwhelming the server.
+5. **Page-ID Mapping**: Each URL is assigned a unique integer page ID. Two bidirectional tables (`URL_TO_ID` and `ID_TO_URL`) enable efficient lookups in both directions.
+
+6. **Rate Limiting**: A configurable delay (default 500ms) between requests prevents overwhelming the server.
+
+7. **Retry Logic**: Failed requests (404s, timeouts) are retried up to 3 times before skipping the page.
 
 ### LevelDB Schema Design
 
@@ -95,19 +101,22 @@ LevelDB is used as the key-value store (replacing JDBM). Keys are prefixed strin
 | `page:<pageId>` | `{title, url, lastModified, size}` | Page metadata |
 | `word:map:<word>` | `wordId` | Stemmed word → Word ID |
 | `word:id:<wordId>` | `word` | Word ID → Stemmed word |
-| `forward:<pageId>` | `[{wordId, tf, positions}]` | Forward index (terms per doc) |
+| `forward:<pageId>` | `[{wordId, tf, positions[]}]` | Forward index (terms per doc) |
 | `inverted:<wordId>` | `[{pageId, tf}]` | Inverted index (docs per term) |
-| `title:words:<pageId>` | `[{wordId, positions}]` | Title word positions |
+| `title:words:<pageId>` | `[{wordId, positions[]}]` | Title word positions (separate from body) |
 | `links:children:<pageId>` | `[childPageId, ...]` | Child links |
 | `links:parents:<pageId>` | `[parentPageId, ...]` | Parent links |
-| `stats:freq:<pageId>` | `[{word, freq}]` | Top keywords for display |
+| `stats:freq:<pageId>` | `[{word, freq}]` | Top 10 keywords for display |
+| `meta:counters` | `{nextPageId, nextWordId}` | Auto-increment counters |
+
+**Two separate inverted files**: Title words and body words are stored separately, enabling efficient title-match detection and boosting.
 
 ### Indexing Pipeline
 
 1. **Tokenization**: Text is lowercased and split on non-alphanumeric characters.
-2. **Stopword Removal**: Common English words (429 stopwords) are filtered out using a from-scratch implementation.
+2. **Stopword Removal**: Common English words (429 stopwords) are filtered out using a from-scratch `Set` lookup.
 3. **Stemming**: Words are reduced to their stem using a from-scratch implementation of the Porter Stemming Algorithm (steps 1a through 5b).
-4. **Forward Index**: For each page, stores all stemmed terms with their term frequencies (tf) and positions.
+4. **Forward Index**: For each page, stores all stemmed terms with their term frequencies (tf) and word positions.
 5. **Inverted Index**: For each term, stores all pages containing it with their term frequencies.
 
 ### Vector Space Model and Cosine Similarity
@@ -131,16 +140,24 @@ Retrieval uses the Vector Space Model with cosine similarity:
 The `src/indexer/tokenizer.js` module implements stopword filtering from scratch:
 
 - Loads 429 English stopwords from `stopwords.txt`
-- Checks each token against the stopword set during processing
+- Checks each token against the stopword `Set` during processing (O(1) lookup)
 - No external NLP libraries are used
 
 ### Porter Stemming Algorithm
 
 The `src/indexer/porterStemmer.js` module implements the full Porter Stemming Algorithm from scratch:
 
-- Steps 1a through 5b for suffix stripping
-- Helper functions: `isConsonant()`, `measure()`, `hasVowel()`, `endsDoubleConsonant()`, `endsCVC()`
-- Examples: `running` → `run`, `cats` → `cat`, `connection` → `connect`
+| Step | Description | Example |
+|------|-------------|---------|
+| 1a | Plurals (`sses`, `ies`, `ss`, `s`) | `cats` → `cat` |
+| 1b | `-eed`, `-ed`, `-ing` | `running` → `run` |
+| 1c | `-y` → `-i` if stem has vowel | `happy` → `happi` |
+| 2 | Double suffixes | `relational` → `relate` |
+| 3 | `-ic-`, `-full`, `-ness` | `activate` → `activ` |
+| 4 | `-ant`, `-ence`, `-er`, etc. | `digital` → `digit` |
+| 5a/5b | Final `-e`, double consonant | `rate` → `rat` |
+
+Key helper functions: `isConsonant()`, `measure()`, `hasVowel()`, `endsDoubleConsonant()`, `endsCVC()`.
 
 ## npm Scripts
 
@@ -153,5 +170,7 @@ The `src/indexer/porterStemmer.js` module implements the full Porter Stemming Al
 ## Constraints
 
 - No external search APIs or high-level NLP libraries (no Lucene, `natural`, or ElasticSearch)
+- Porter Stemmer and stopword filtering implemented from scratch
 - Cyclic links handled via visited set
 - Maximum 300 pages indexed
+- Incremental updates mandatory (rebuilding from scratch is forbidden)
