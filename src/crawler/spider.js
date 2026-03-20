@@ -14,10 +14,6 @@ import db from '../storage/db.js';
 import { loadStopwords } from '../indexer/tokenizer.js';
 import { sleep } from '../utils/helpers.js';
 
-const FORCE_RE_CRAWL = process.argv.includes('--force-recrawl')
-  || process.env.FORCE === '1'
-  || process.env.FORCE === 'true';
-
 // Crawler state
 const state = {
   queue: [],        // BFS queue of URLs to process
@@ -65,7 +61,8 @@ async function checkHeadRequest(url) {
         'User-Agent': CONFIG.crawler.userAgent
       },
       maxRedirects: 5,
-      validateStatus: (status) => status < 500
+      // Only accept 2xx as valid — 404/403/301/302 without Last-Modified should not be treated as "unchanged"
+      validateStatus: (status) => (status >= 200 && status < 300)
     });
     
     const lastModified = response.headers['last-modified'] 
@@ -82,7 +79,7 @@ async function checkHeadRequest(url) {
       statusCode: response.status
     };
   } catch (e) {
-    // If HEAD fails, try GET anyway
+    // HEAD failed entirely — cannot determine if page changed, must re-fetch
     return {
       needsFetch: true,
       lastModified: null,
@@ -98,29 +95,30 @@ async function checkHeadRequest(url) {
  * @returns {Object} - { html: string, lastModified: string, contentLength: number }
  */
 async function fetchPage(url) {
-  const response = await axios.get(url, {
-    timeout: CONFIG.crawler.requestTimeout,
-    headers: {
-      'User-Agent': CONFIG.crawler.userAgent
-    },
-    maxRedirects: 5,
-    responseType: 'text',
-    validateStatus: (status) => status < 500
-  });
-  
-  const lastModified = response.headers['last-modified'] 
-    ? parseLastModified(response.headers['last-modified']) 
-    : getDefaultLastModified();
-  const contentLength = response.headers['content-length'] 
-    ? parseInt(response.headers['content-length'], 10) 
-    : null;
-  
-  return {
-    html: response.data,
-    lastModified,
-    contentLength,
-    statusCode: response.status
-  };
+  let lastError = null;
+  for (let attempt = 1; attempt <= CONFIG.crawler.maxRetries; attempt++) {
+    try {
+      const response = await axios.get(url, {
+        timeout: CONFIG.crawler.requestTimeout,
+        headers: { 'User-Agent': CONFIG.crawler.userAgent },
+        maxRedirects: 5,
+        responseType: 'text',
+        validateStatus: (status) => (status >= 200 && status < 300)
+      });
+      const lastModified = response.headers['last-modified']
+        ? parseLastModified(response.headers['last-modified'])
+        : getDefaultLastModified();
+      const contentLength = response.headers['content-length']
+        ? parseInt(response.headers['content-length'], 10) : null;
+      return { html: response.data, lastModified, contentLength, statusCode: response.status };
+    } catch (e) {
+      lastError = e;
+      if (attempt < CONFIG.crawler.maxRetries) {
+        await sleep(1000 * attempt);
+      }
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -175,63 +173,33 @@ async function indexPage(pageId, pageData) {
  * @param {number|null} parentPageId - Parent page ID (null for seed)
  * @returns {Object} - { success: boolean, pageId: number, childUrls: string[] }
  */
-async function processAndIndexPage(url, parentPageId = null, force = false) {
+async function processAndIndexPage(url, parentPageId = null) {
   try {
     // Check if URL already exists in index
     const existingPageId = await db.getPageIdByUrl(url);
     
-    let needsFullFetch = true;
     let storedLastModified = null;
     let headLastModified = null;
     
-    if (!force && existingPageId !== null) {
-      // URL exists - check last modified
+    if (existingPageId !== null) {
       storedLastModified = await db.getLastModified(existingPageId);
-      
-      // Perform HEAD request to check if page has changed
       const headResult = await checkHeadRequest(url);
       headLastModified = headResult.lastModified;
       
       if (headLastModified && storedLastModified) {
         const storedDate = new Date(storedLastModified);
         const headDate = new Date(headLastModified);
-        
         if (headDate <= storedDate) {
-          // Page hasn't changed, skip re-fetch
-          needsFullFetch = false;
           state.skipped++;
-          
-          // Still need to process children for BFS
-          const pageData = await db.getPageData(existingPageId);
-          
-          // Get stored children URLs
-          const childPageIds = await db.getChildren(existingPageId);
-          const childUrls = [];
-          for (const childId of childPageIds) {
-            const childUrl = await db.getUrlByPageId(childId);
-            if (childUrl) childUrls.push(childUrl);
-          }
-          
           console.log(`  [SKIP] ${url} (not modified)`);
-          return { success: true, pageId: existingPageId, childUrls, skipped: true };
+          // Per Q&A: children only from fetched pages — return empty
+          return { success: true, pageId: existingPageId, childUrls: [], skipped: true };
         }
       }
       
-      // If no stored last-modified, check HEAD for content-length as fallback
-      if (!storedLastModified && !headLastModified) {
-        // Can't determine, skip to avoid re-processing
-        needsFullFetch = false;
-        state.skipped++;
-        
-        const childPageIds = await db.getChildren(existingPageId);
-        const childUrls = [];
-        for (const childId of childPageIds) {
-          const childUrl = await db.getUrlByPageId(childId);
-          if (childUrl) childUrls.push(childUrl);
-        }
-        
-        console.log(`  [SKIP] ${url} (already indexed, no date info)`);
-        return { success: true, pageId: existingPageId, childUrls, skipped: true };
+      // Cannot confirm page unchanged (head date unknown) — must re-fetch
+      if (!headLastModified) {
+        console.log(`  [UPDATE] ${url} (no server date — re-fetching)`);
       }
     }
     
@@ -245,13 +213,14 @@ async function processAndIndexPage(url, parentPageId = null, force = false) {
     let pageId;
     
     if (existingPageId !== null) {
-      // Update existing page
+      // Clear stale inverted index entries before re-indexing
+      await db.clearPageFromInvertedIndex(existingPageId);
       pageId = existingPageId;
     } else {
       // Create new page ID
       pageId = await db.getNextPageId();
     }
-    
+
     // Store URL mapping
     await db.storeUrlMapping(pageId, url);
     
@@ -303,12 +272,10 @@ async function processAndIndexPage(url, parentPageId = null, force = false) {
 export async function crawl(options = {}) {
   const seedUrl = options.seedUrl || CONFIG.crawler.seedUrl;
   const maxPages = options.maxPages || CONFIG.crawler.maxPages;
-  const force = options.force || FORCE_RE_CRAWL;
   
   console.log(`\n=== COMP4321 Spider Starting ===`);
   console.log(`Seed URL: ${seedUrl}`);
   console.log(`Max pages: ${maxPages}`);
-  if (force) console.log(`Mode: FORCE (re-crawling all pages)`);
   
   // Initialize database
   await db.openDB();
@@ -347,7 +314,7 @@ export async function crawl(options = {}) {
     const parentPageId = urlToPageId.has(url) ? urlToPageId.get(url) : null;
     
     // Process the page
-    const result = await processAndIndexPage(url, parentPageId, force);
+    const result = await processAndIndexPage(url, parentPageId);
     
     if (result.success) {
       urlToPageId.set(url, result.pageId);

@@ -25,14 +25,6 @@ Crawl 300 pages starting from the seed URL and build the search index:
 npm run crawl
 ```
 
-Force re-crawl all pages (bypasses last-modified check):
-
-```bash
-FORCE=1 npm run crawl
-# or
-npm run crawl -- --force-recrawl
-```
-
 ### 2. Generate spider_result.txt
 
 Output indexed data to a plain-text file:
@@ -122,8 +114,8 @@ LevelDB is used as the key-value store (replacing JDBM). Keys are prefixed strin
 
 Retrieval uses the Vector Space Model with cosine similarity:
 
-- **Term Weight**: `tf-idf(t, d) = (1 + log(tf(t,d))) × log(N / df(t))`
-  - Sublinear TF scaling prevents dominance by high-frequency terms
+- **Term Weight**: `tf-idf(t, d) = (tf / max(tf)) × log₂(N / df(t))`
+  - Max TF normalization scales term frequency relative to the most frequent term in the document
   - IDF penalizes terms that appear in many documents
 
 - **Cosine Similarity**: `cosine(q, d) = (q · d) / (||q|| × ||d||)`
@@ -154,8 +146,7 @@ The `src/indexer/porterStemmer.js` module implements the full Porter Stemming Al
 
 | Command | Description |
 |---------|-------------|
-| `npm run crawl` | Crawl and index up to 300 pages |
-| `FORCE=1 npm run crawl` or `npm run crawl -- --force-recrawl` | Force recrawling even if all webpages are unmodified |
+| `npm run crawl` | Crawl and index up to 300 pages (incremental: re-fetches only modified pages) |
 | `npm run generate` | Generate `spider_result.txt` from the index |
 | `npm run serve` | Start the web interface on port 3000 (localhost:3000) |
 

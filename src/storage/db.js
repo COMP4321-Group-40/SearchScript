@@ -284,6 +284,38 @@ export async function addToInvertedIndex(wordId, pageId, tf) {
 }
 
 /**
+ * Remove all inverted index entries for a specific page.
+ * Called before re-indexing to ensure stale entries are cleaned.
+ */
+export async function clearPageFromInvertedIndex(pageId) {
+  const database = await getDB();
+  const batch = database.batch();
+  let deleted = 0;
+
+  for await (const [key, postings] of database.iterator({
+    gte: KEYS.INVERTED_INDEX,
+    lt: KEYS.INVERTED_INDEX + '~'
+  })) {
+    if (!Array.isArray(postings)) continue;
+    const originalLength = postings.length;
+    const filtered = postings.filter(p => p.pageId !== pageId);
+    if (filtered.length !== originalLength) {
+      if (filtered.length === 0) {
+        batch.del(key);
+      } else {
+        batch.put(key, filtered);
+      }
+      deleted++;
+    }
+  }
+
+  if (deleted > 0) {
+    await batch.write();
+  }
+  return deleted;
+}
+
+/**
  * Get all postings for a word (inverted index entry)
  */
 export async function getInvertedIndex(wordId) {

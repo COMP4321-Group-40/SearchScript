@@ -1,7 +1,7 @@
 /**
  * Test Generator for spider_result.txt
  * Reads indexed data from LevelDB and outputs in required format:
- * 
+ *
  * Page title
  * URL
  * Last modification date, size of page
@@ -9,6 +9,7 @@
  * Child Link1
  * Child Link2
  * ...
+ * -------------------------------------------------------------------
  */
 
 import { writeFileSync } from 'fs';
@@ -67,12 +68,18 @@ export async function generateResult(outputPath = './spider_result.txt') {
     } else {
       output += '\n';
     }
-    
-    // Child links (up to 10)
+
+    // Child links (one per line, up to 10)
     for (let i = 0; i < Math.min(childUrls.length, 10); i++) {
       output += childUrls[i] + '\n';
     }
-    
+    if (childUrls.length === 0) {
+      output += '\n';
+    }
+
+    // Separator (79 dashes)
+    output += '-------------------------------------------------------------------------------\n';
+
     // Blank line between entries
     output += '\n';
   }

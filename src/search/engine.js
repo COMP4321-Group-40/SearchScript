@@ -22,21 +22,34 @@ import { CONFIG, KEYS } from '../config.js';
  * @param {number} totalDocs - Total number of documents
  * @returns {Promise<number>} - Document vector magnitude
  */
-async function computeDocMagnitude(pageId, totalDocs) {
+async function computeDocScore(pageId, totalDocs, queryTerms) {
   const forwardIdx = await db.getForwardIndex(pageId);
-  if (!forwardIdx || forwardIdx.length === 0) return 0;
+  if (!forwardIdx || forwardIdx.length === 0) return { magnitude: 0, dotProduct: 0 };
+
+  const maxTf = Math.max(...forwardIdx.map(e => e.tf));
+  const queryWordIds = [];
+  for (const term of queryTerms) {
+    const wid = await db.getWordId(term);
+    if (wid) queryWordIds.push(wid);
+  }
+  const queryWordIdSet = new Set(queryWordIds);
 
   let sumSquares = 0;
+  let dotProduct = 0;
+
   for (const entry of forwardIdx) {
     const df = await db.getDocumentFrequency(entry.wordId);
     if (df === 0) continue;
-    const tfWeight = 1 + Math.log(entry.tf);
-    const idf = Math.log(totalDocs / df);
-    const weight = tfWeight * idf;
+    const normTf = entry.tf / maxTf;
+    const idf = Math.log2(totalDocs / df);
+    const weight = normTf * idf;
     sumSquares += weight * weight;
+    if (queryWordIdSet.has(entry.wordId)) {
+      dotProduct += weight;
+    }
   }
 
-  return Math.sqrt(sumSquares);
+  return { magnitude: Math.sqrt(sumSquares), dotProduct };
 }
 
 /**
@@ -186,55 +199,30 @@ export async function search(queryString) {
   const totalDocs = await db.getTotalDocuments();
   if (totalDocs === 0) return [];
 
-  // Collect candidate documents and their dot product components
   const docScores = new Map();
-  const queryTermIdfs = new Map();
 
-  // --- Term-based scoring (Vector Space Model) ---
   for (const term of terms) {
     const wordId = await db.getWordId(term);
     if (!wordId) continue;
-
     const postings = await getPostings(wordId);
     if (postings.length === 0) continue;
-
-    const df = postings.length;
-    const idf = Math.log(totalDocs / df);
-    queryTermIdfs.set(term, idf);
-
-    for (const { pageId, tf } of postings) {
-      const tfWeight = 1 + Math.log(tf);
-      const docWeight = tfWeight * idf;
-      const dotContribution = idf * docWeight;
-
+    for (const { pageId } of postings) {
       if (!docScores.has(pageId)) {
-        docScores.set(pageId, {
-          dotProduct: 0,
-          titleBoost: 0,
-          phraseTitleBoost: 0,
-          phraseBodyBoost: 0
-        });
+        docScores.set(pageId, { titleMatches: 0, phraseTitleBoost: 0, phraseBodyBoost: 0 });
       }
       const entry = docScores.get(pageId);
-      entry.dotProduct += dotContribution;
-
       const inTitle = await db.wordInTitle(wordId, pageId);
-      if (inTitle) {
-        entry.titleBoost += dotContribution * (CONFIG.search.titleBoost - 1);
-      }
+      if (inTitle) entry.titleMatches++;
     }
   }
 
-  // --- Phrase-based scoring ---
   for (const phraseTokens of phrases) {
     const candidateDocs = new Set();
-
     for (let i = 0; i < phraseTokens.length; i++) {
       const wordId = await db.getWordId(phraseTokens[i]);
       if (!wordId) { candidateDocs.clear(); break; }
       const postings = await getPostings(wordId);
       if (postings.length === 0) { candidateDocs.clear(); break; }
-
       if (i === 0) {
         for (const p of postings) candidateDocs.add(p.pageId);
       } else {
@@ -244,53 +232,34 @@ export async function search(queryString) {
         }
       }
     }
-
     for (const pageId of candidateDocs) {
       const inTitle = await checkPhraseInDocument(pageId, phraseTokens, 'title');
       const inBody = await checkPhraseInDocument(pageId, phraseTokens, 'body');
-
       if (inTitle || inBody) {
         if (!docScores.has(pageId)) {
-          docScores.set(pageId, {
-            dotProduct: 0, titleBoost: 0,
-            phraseTitleBoost: 0, phraseBodyBoost: 0
-          });
+          docScores.set(pageId, { titleMatches: 0, phraseTitleBoost: 0, phraseBodyBoost: 0 });
         }
         const entry = docScores.get(pageId);
-        const phraseBoost = 5.0;
-        if (inTitle) entry.phraseTitleBoost += phraseBoost * CONFIG.search.titleBoost;
-        if (inBody) entry.phraseBodyBoost += phraseBoost;
+        if (inTitle) entry.phraseTitleBoost += 5.0 * CONFIG.search.titleBoost;
+        if (inBody) entry.phraseBodyBoost += 5.0;
       }
     }
   }
 
   if (docScores.size === 0) return [];
 
-  // --- Cosine Similarity Normalization ---
-  // Query magnitude: ||q|| = sqrt(sum(idf²))
-  let queryMagSq = 0;
-  for (const [, idf] of queryTermIdfs) queryMagSq += idf * idf;
-  const queryMagnitude = Math.sqrt(queryMagSq);
+  const queryMagnitude = Math.sqrt(terms.length);
   const hasTerms = queryMagnitude > 0;
-
-  // Normalize each document score: cosine = dotProduct / (||q|| * ||d||)
   const scored = [];
+
   for (const [pageId, entry] of docScores) {
-    if (entry.dotProduct === 0 && entry.phraseBodyBoost === 0 && entry.phraseTitleBoost === 0) continue;
-
     if (hasTerms) {
-      // Standard cosine similarity normalization
-      const docMagnitude = await computeDocMagnitude(pageId, totalDocs);
-      if (docMagnitude === 0) continue;
-
-      const denominator = queryMagnitude * docMagnitude;
-      let cosineScore = entry.dotProduct / denominator;
-      cosineScore += entry.titleBoost / denominator;
-      cosineScore += (entry.phraseBodyBoost + entry.phraseTitleBoost) / denominator;
-
+      const { magnitude, dotProduct } = await computeDocScore(pageId, totalDocs, terms);
+      if (magnitude === 0) continue;
+      const titleBoost = (entry.titleMatches / terms.length) * (CONFIG.search.titleBoost - 1) * (dotProduct / terms.length);
+      const cosineScore = (dotProduct + titleBoost + entry.phraseBodyBoost + entry.phraseTitleBoost) / (queryMagnitude * magnitude);
       if (cosineScore > 0) scored.push({ pageId, score: cosineScore });
     } else {
-      // Pure phrase query: use raw boost scores
       const score = entry.phraseBodyBoost + entry.phraseTitleBoost;
       if (score > 0) scored.push({ pageId, score });
     }

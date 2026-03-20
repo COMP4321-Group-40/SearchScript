@@ -28,7 +28,7 @@ The search engine follows a three-stage pipeline:
 src/
 ├── config.js              # All configuration constants
 ├── crawler/
-│   ├── spider.js          # BFS crawler, HEAD check, --force flag
+│   ├── spider.js          # BFS crawler, HEAD check, incremental updates
 │   └── pageProcessor.js   # HTML parsing with Cheerio
 ├── indexer/
 │   ├── porterStemmer.js   # Porter Stemming Algorithm (from scratch)
@@ -133,10 +133,10 @@ Implementation in search engine:
 
 **Term Weighting**:
 ```
-tf-idf(t, d) = (1 + log(tf(t,d))) × log(N / df(t))
+tf-idf(t, d) = (tf(t,d) / max_tf(d)) × log₂(N / df(t))
 ```
-- Sublinear TF scaling (`1 + log(tf)`) prevents high-frequency terms from dominating
-- IDF (`log(N/df)`) penalizes common terms
+- Max TF normalization scales term frequency relative to the most frequent term in the document
+- IDF (`log₂(N/df)`) penalizes terms that appear in many documents
 
 **Cosine Similarity**:
 ```
@@ -172,14 +172,6 @@ npm run serve
 # Open http://localhost:3000 in a browser
 ```
 
-### Force Re-crawl
-
-If the database already contains pages but you need to re-crawl:
-
-```bash
-FORCE=1 npm run crawl
-```
-
 ## 5. Feature Highlights
 
 ### Core Features
@@ -199,8 +191,7 @@ FORCE=1 npm run crawl
 
 ### Beyond Required Specification
 
-1. **Force Re-crawl Flag**: `FORCE=1` environment variable allows re-indexing without deleting the database
-2. **Responsive UI**: The web interface adapts to different screen sizes
+1. **Responsive UI**: The web interface adapts to different screen sizes
 3. **Score Display**: Relevance scores are shown for each result
 4. **Keyword Display**: Top 5 stemmed keywords with frequencies shown per result
 5. **Separate Title Index**: Title words are indexed separately for efficient title-match detection
