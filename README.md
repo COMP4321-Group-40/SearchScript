@@ -20,13 +20,9 @@ This fetches up to 300 pages starting from the seed URL and builds the search in
 
 > **Important:** `npm run serve` will start with an empty database if crawl has not been run yet.
 
-**Step 3 — Start the web interface:**
+> **Note:** PageRank is also computed after crawling is finished.
 
-```bash
-npm run serve      # http://localhost:3000
-```
-
-**Step 4 — Generate spider_result.txt (optional):**
+**Step 3 — Generate spider_result.txt (optional):**
 
 ```bash
 npm run generate
@@ -34,7 +30,23 @@ npm run generate
 
 Outputs all indexed pages to `spider_result.txt`.
 
+**Step 4 — Compute PageRank (optional):**
+
+```bash
+npm run pagerank
+```
+
+Computes PageRank scores for all indexed pages using power iteration over the link graph. Results are stored in the database and used to boost high-authority pages in search rankings.
+
 > **Prerequisites:** Node.js v18 or higher.
+
+> **Note:** `npm run crawl` implicitly computes PageRank
+
+**Step 5 — Start the web interface:**
+
+```bash
+npm run serve      # http://localhost:3000
+```
 
 ## Search Interface
 
@@ -46,16 +58,15 @@ The web interface at `http://localhost:3000` provides:
 - **Result cards** — ranked results with score, title, URL, meta, and keywords
 - **"Get Similar" button** — click to find similar pages via relevance feedback
 
-Both sidebars stay fixed while scrolling through results.
-
 ## Query Syntax
 
 | Format | Example | Description |
 |--------|---------|-------------|
 | Single term | `machine` | Search for pages containing "machine" |
-| Multiple terms | `machine learning` | AND search — pages containing both terms |
+| Multiple terms | `machine learning` | OR search — pages containing any terms, ranked by relevance |
 | Exact phrase | `"machine learning"` | Pages where words appear consecutively |
 | Exclude term | `python -java` | Pages about Python but not Java |
+| Exclude phrase | `python -"machine learning"` | Pages about Python but not machine learning |
 
 Terms are **stemmed** before matching (e.g., "machines" → "machine"). Common **stopwords** are excluded from search.
 
@@ -71,9 +82,10 @@ src/
 │   ├── porterStemmer.js   # Porter Stemming Algorithm (steps 1a–5b, from scratch)
 │   └── tokenizer.js        # Tokenization, stopword filtering, TF calculation
 ├── search/
+|   ├── computePageRank.js # Computes PageRank
 │   └── engine.js          # VSM retrieval with cosine similarity
 ├── storage/
-│   └── db.js              # LevelDB storage layer (25 functions, 12 key prefixes)
+│   └── db.js              # LevelDB storage layer (31 functions, 16 key prefixes)
 ├── web/
 │   ├── app.js             # Express server with REST API endpoints
 │   ├── views/index.ejs    # Search interface (EJS + vanilla JS SPA)
@@ -100,7 +112,7 @@ The spider uses **breadth-first search** (BFS) to discover pages:
 
 ### Storage (`src/storage/db.js`)
 
-LevelDB key-value store with 12 key prefixes:
+LevelDB key-value store with 16 key prefixes:
 
 | Key Prefix | Value | Purpose |
 |------------|-------|---------|
@@ -109,20 +121,23 @@ LevelDB key-value store with 12 key prefixes:
 | `page:<pageId>` | `{title, url, lastModified, size}` | Page metadata |
 | `word:map:<word>` | `wordId` | Stemmed word → Word ID |
 | `word:id:<wordId>` | `word` | Word ID → Stemmed word |
-| `forward:<pageId>` | `[{wordId, tf, positions[]}]` | Forward index (terms per document) |
+| `forward:<pageId>` | `[{wordId, positions, tf}]` | Forward index (terms per document) |
 | `inverted:<wordId>` | `[{pageId, tf}]` | Inverted index (documents per term) |
 | `title:words:<pageId>` | `[{wordId, positions[]}]` | Title words (separate from body) |
+| `title:inverted:<wordId>` | `[pageId, ...]` | Inverted index for title words only |
 | `links:children:<pageId>` | `[childPageId, ...]` | Child links (outgoing) |
 | `links:parents:<pageId>` | `[parentPageId, ...]` | Parent links (incoming) |
+| `page:rank:<pageId>` | `score` | Pre-computed PageRank score |
 | `stats:freq:<pageId>` | `[{word, freq}]` | Top 10 keywords per page |
-| `meta:counters` | `{nextPageId, nextWordId}` | Auto-increment counters |
+| `word:freq:<wordId>` | `count` | Pre-computed document frequency (cache) |
+| `meta:counters` | `{nextPageId, nextWordId, totalDocuments}` | Auto-increment counters |
 
 Title words and body words are stored **separately**, enabling efficient title-match detection and boosting.
 
 ### Indexing Pipeline (`src/indexer/`)
 
 1. **Tokenization** — Lowercase, split on non-alphanumeric, filter by length (2–50 chars).
-2. **Stopword Removal** — 423 unique English stopwords loaded into a `Set` for O(1) lookup.
+2. **Stopword Removal** — 429 unique English stopwords loaded into a `Set` for O(1) lookup.
 3. **Stemming** — Porter Stemming Algorithm steps 1a through 5b, implemented from scratch.
 4. **Forward Index** — Stores all stemmed terms per page with TF and word positions.
 5. **Inverted Index** — Stores all page IDs per term with TF.
@@ -133,7 +148,7 @@ Vector Space Model with **cosine similarity**:
 
 - **Term Weight**: `tf-idf(t, d) = (tf / max(tf)) × log₂(N / df)`
 - **Cosine Similarity**: `cosine(q, d) = (q · d) / (||q|| × ||d||)`
-- **Title Boost**: Matches in the title field receive a 3.0× multiplier
+- **Title Boost**: Pages where query terms appear in the title receive a proportional boost — the more query terms match the title, the larger the boost (scaled by titleBoost = 3.0)
 - **Phrase Matching**: Quoted phrases checked for consecutive word positions in title and body; title phrase matches receive a 5.0 × titleBoost bonus
 
 ### Porter Stemmer (`src/indexer/porterStemmer.js`)
@@ -155,7 +170,7 @@ Key helpers: `isConsonant()`, `measure()`, `hasVowel()`, `endsDoubleConsonant()`
 ## Bonus Features
 
 ### 1. Excluded Terms
-Terms prefixed with `-` are excluded from results. The excluded term is stemmed and matched against each page's forward index. Example: `python -java` returns pages containing "python" but not "java".
+Terms prefixed with `-` are excluded from results. Single-term exclusions are stemmed and matched against each page's forward index (body) and title index. Phrase exclusions (`-"phrase"`) are checked for consecutive word positions in both title and body. Example: `python -java` returns pages containing "python" but not "java". Example: `-"machine learning"` excludes pages where "machine learning" appears as a phrase.
 
 ### 2. Exact Phrase Search
 Quoted strings match exact word sequences. Positions are checked in both title and body; consecutive matching words boost the score significantly. Example: `"machine learning"` finds pages where these words appear side by side.
@@ -189,6 +204,4 @@ The server exposes JSON endpoints for programmatic access:
 
 - No external search APIs or high-level NLP libraries (no Lucene, `natural`, or ElasticSearch)
 - Porter Stemmer and stopword filtering implemented from scratch
-- Cyclic links handled via visited set
-- Maximum 300 pages indexed
 - Incremental updates mandatory — rebuilding from scratch is forbidden

@@ -32,8 +32,7 @@ export const CONFIG = {
     titleBoost: 3.0, // Title match weight multiplier
     pagerankWeight: 0.2, // Weight of PageRank in final score (0 = disabled)
     pagerankDamping: 0.85, // Damping factor for PageRank iteration
-    pagerankEpsilon: 0.0001, // Convergence threshold
-    defaultTfScheme: 'log' // 'raw', 'log', 'augmented'
+    pagerankEpsilon: 0.0001 // Convergence threshold
   },
 
   // Web interface settings
