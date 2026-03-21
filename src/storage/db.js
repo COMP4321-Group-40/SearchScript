@@ -183,11 +183,6 @@ export async function storeUrlMapping(pageId, url) {
   await batch.write();
 }
 
-/**
- * Check if URL already exists in index
- */
-
-
 // ============================================
 // PAGE DATA
 // ============================================
@@ -270,9 +265,6 @@ export async function wordExists(word) {
 // ============================================
 // WORD FREQUENCY (pre-computed document counts)
 // ============================================
-
-
-
 
 /**
  * Get the pre-computed document frequency for a word.
@@ -455,13 +447,11 @@ export async function clearPageFromInvertedIndex(pageId, wordIds) {
 export async function getInvertedIndex(wordId) {
   const database = await getDB();
   try {
-    return await database.get(KEYS.INVERTED_INDEX + wordId);
+  return await database.get(KEYS.INVERTED_INDEX + wordId);
   } catch (e) {
     return [];
   }
 }
-
-
 
 // ============================================
 // TITLE INDEX

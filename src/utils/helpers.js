@@ -27,21 +27,7 @@ export function formatDate(date) {
   }
 }
 
-/**
- * Truncate string to max length
- * @param {string} str
- * @param {number} maxLength
- * @returns {string}
- */
-export function truncate(str, maxLength = 100) {
-  if (!str) return '';
-  const chars = [...str];
-  if (chars.length <= maxLength) return str;
-  return chars.slice(0, maxLength - 3).join('') + '...';
-}
-
 export default {
   sleep,
-  formatDate,
-  truncate
+  formatDate
 };
