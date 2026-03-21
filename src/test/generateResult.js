@@ -17,6 +17,17 @@ import db from '../storage/db.js';
 import { formatDate } from '../utils/helpers.js';
 
 /**
+ * Sanitize a field value — replace newlines/tabs with spaces, handle null/undefined.
+ * Prevents multi-line content from corrupting the line-based output format.
+ * @param {*} val
+ * @returns {string}
+ */
+const sanitize = (val) => {
+  if (val === null || val === undefined) return 'N/A';
+  return String(val).replace(/[\r\n\t]/g, ' ').trim() || 'N/A';
+};
+
+/**
  * Generate spider_result.txt from database
  * @param {string} outputPath - Output file path
  */
@@ -34,11 +45,14 @@ export async function generateResult(outputPath = './spider_result.txt') {
   for (const pageId of pageIds) {
     // Get page metadata
     const pageData = await db.getPageData(pageId);
-    if (!pageData) continue;
-    
+    if (!pageData) {
+      console.warn(`Skipping pageId ${pageId}: page data not found`);
+      continue;
+    }
+
     // Get top keywords with frequencies
     const stats = await db.getPageStats(pageId);
-    
+
     // Get child links
     const childIds = await db.getChildren(pageId);
     const childUrls = [];
@@ -46,17 +60,17 @@ export async function generateResult(outputPath = './spider_result.txt') {
       const childUrl = await db.getUrlByPageId(childId);
       if (childUrl) childUrls.push(childUrl);
     }
-    
+
     // Format output according to specification
-    // Page title
-    output += pageData.title + '\n';
-    
-    // URL
-    output += pageData.url + '\n';
-    
-    // Last modification date, size of page
+    // Page title (sanitized to prevent multi-line corruption)
+    output += sanitize(pageData.title) + '\n';
+
+    // URL (sanitized)
+    output += sanitize(pageData.url) + '\n';
+
+    // Last modification date, size of page (sanitized)
     const lastMod = formatDate(pageData.lastModified);
-    output += `${lastMod}, ${pageData.size}\n`;
+    output += `${lastMod}, ${sanitize(pageData.size)}\n`;
     
     // Keywords with frequencies (up to 10)
     if (stats && stats.length > 0) {

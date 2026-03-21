@@ -138,14 +138,13 @@ export function processPage(html, url, lastModified = null, contentLength = null
   // Process body text for keyword extraction
   const bodyProcessed = processText(bodyText);
   
-  // Combine all stemmed words for statistics
-  const allStemmed = [...titleProcessed.stemmed, ...bodyProcessed.stemmed];
-  const combinedTF = calculateTF(allStemmed);
-  const topKeywords = getTopFrequentWords(combinedTF, CONFIG.indexer.maxKeywords);
+  const topKeywords = getTopFrequentWords(
+    calculateTF([...titleProcessed.stemmed, ...bodyProcessed.stemmed]),
+    CONFIG.indexer.maxKeywords
+  );
   
   // Build word entries with positions for body
   const bodyWordEntries = [];
-  const bodyWordMap = new Map(); // wordId -> entry (will be filled by indexer)
   
   for (const [word, positions] of bodyProcessed.positions) {
     bodyWordEntries.push({
@@ -177,8 +176,7 @@ export function processPage(html, url, lastModified = null, contentLength = null
     bodyProcessed,
     bodyWordEntries,
     titleWordEntries,
-    topKeywords,
-    combinedTF
+    topKeywords
   };
 }
 

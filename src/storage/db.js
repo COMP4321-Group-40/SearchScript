@@ -21,9 +21,13 @@ export async function openDB(dbPath = CONFIG.database.path) {
   db = new Level(dbPath, { valueEncoding: 'json' });
   await db.open();
   
-  // Initialize counters if not exists
+  // Initialize counters if not exists or migrate from pre-totalDocuments versions
   try {
-    await db.get(KEYS.COUNTERS);
+    const counters = await db.get(KEYS.COUNTERS);
+    if (!('totalDocuments' in counters)) {
+      counters.totalDocuments = 0;
+      await db.put(KEYS.COUNTERS, counters);
+    }
   } catch (e) {
     if (e.code === 'LEVEL_NOT_FOUND') {
       await db.put(KEYS.COUNTERS, INITIAL_COUNTERS);
@@ -77,26 +81,66 @@ export async function updateCounters(counters) {
   await database.put(KEYS.COUNTERS, counters);
 }
 
+export async function getTotalDocuments() {
+  const counters = await getCounters();
+  if (typeof counters.totalDocuments === 'number') {
+    return counters.totalDocuments;
+  }
+  const pageIds = await getAllPageIds();
+  return pageIds.length;
+}
+
+export async function incrementTotalDocuments(delta) {
+  await counterMutex.totalDocuments;
+  let release;
+  counterMutex.totalDocuments = new Promise(resolve => { release = resolve; });
+  try {
+    const counters = await getCounters();
+    counters.totalDocuments = Math.max(0, (counters.totalDocuments || 0) + delta);
+    await updateCounters(counters);
+  } finally {
+    release();
+  }
+}
+
+// Mutex for atomic counter operations — prevents race conditions on concurrent calls
+const counterMutex = { pageId: Promise.resolve(), wordId: Promise.resolve(), totalDocuments: Promise.resolve() };
+
 /**
- * Get next page ID and increment counter
+ * Get next page ID and increment counter (thread-safe via mutex)
  */
 export async function getNextPageId() {
-  const counters = await getCounters();
-  const pageId = counters.nextPageId;
-  counters.nextPageId++;
-  await updateCounters(counters);
-  return pageId;
+  // Chain onto the existing promise so concurrent callers wait their turn
+  await counterMutex.pageId;
+  let release;
+  counterMutex.pageId = new Promise(resolve => { release = resolve; });
+  try {
+    const counters = await getCounters();
+    const pageId = counters.nextPageId;
+    counters.nextPageId++;
+    await updateCounters(counters);
+    return pageId;
+  } finally {
+    release();
+  }
 }
 
 /**
- * Get next word ID and increment counter
+ * Get next word ID and increment counter (thread-safe via mutex)
  */
 export async function getNextWordId() {
-  const counters = await getCounters();
-  const wordId = counters.nextWordId;
-  counters.nextWordId++;
-  await updateCounters(counters);
-  return wordId;
+  await counterMutex.wordId;
+  let release;
+  counterMutex.wordId = new Promise(resolve => { release = resolve; });
+  try {
+    const counters = await getCounters();
+    const wordId = counters.nextWordId;
+    counters.nextWordId++;
+    await updateCounters(counters);
+    return wordId;
+  } finally {
+    release();
+  }
 }
 
 // ============================================
@@ -142,10 +186,7 @@ export async function storeUrlMapping(pageId, url) {
 /**
  * Check if URL already exists in index
  */
-export async function urlExists(url) {
-  const pageId = await getPageIdByUrl(url);
-  return pageId !== null;
-}
+
 
 // ============================================
 // PAGE DATA
@@ -217,6 +258,45 @@ export async function getWordById(wordId) {
   }
 }
 
+export async function wordExists(word) {
+  const database = await getDB();
+  try {
+    return await database.get(KEYS.WORD_TO_ID + word);
+  } catch (e) {
+    return null;
+  }
+}
+
+// ============================================
+// WORD FREQUENCY (pre-computed document counts)
+// ============================================
+
+
+
+
+/**
+ * Get the pre-computed document frequency for a word.
+ * Falls back to counting postings from the inverted index if not cached.
+ * @param {number} wordId
+ * @returns {Promise<number>} - Number of documents containing this word
+ */
+export async function getWordFrequency(wordId) {
+  const database = await getDB();
+  const key = KEYS.WORD_FREQ + wordId;
+  try {
+    return await database.get(key);
+  } catch (e) {
+    if (e.code !== 'LEVEL_NOT_FOUND') throw e;
+    // Cache miss — count from inverted index and populate cache
+    const postings = await getInvertedIndex(wordId);
+    const count = postings.length;
+    if (count > 0) {
+      await database.put(key, count);
+    }
+    return count;
+  }
+}
+
 /**
  * Get all words (for browsing feature)
  */
@@ -272,45 +352,99 @@ export async function addToInvertedIndex(wordId, pageId, tf) {
     postings = [];
   }
   
-  // Check if pageId already exists in postings
   const existing = postings.findIndex(p => p.pageId === pageId);
   if (existing >= 0) {
     postings[existing].tf = tf;
+    await database.put(KEYS.INVERTED_INDEX + wordId, postings);
   } else {
+    // Read current frequency, update both posting and frequency atomically in one batch
+    const currentFreq = await getWordFrequency(wordId);
+    const batch = database.batch();
     postings.push({ pageId, tf });
+    batch.put(KEYS.INVERTED_INDEX + wordId, postings);
+    batch.put(KEYS.WORD_FREQ + wordId, currentFreq + 1);
+    await batch.write();
   }
-  
-  await database.put(KEYS.INVERTED_INDEX + wordId, postings);
 }
 
-/**
- * Remove all inverted index entries for a specific page.
- * Called before re-indexing to ensure stale entries are cleaned.
- */
-export async function clearPageFromInvertedIndex(pageId) {
+export async function clearPageFromInvertedIndex(pageId, wordIds) {
   const database = await getDB();
   const batch = database.batch();
   let deleted = 0;
 
-  for await (const [key, postings] of database.iterator({
-    gte: KEYS.INVERTED_INDEX,
-    lt: KEYS.INVERTED_INDEX + '~'
-  })) {
-    if (!Array.isArray(postings)) continue;
-    const originalLength = postings.length;
-    const filtered = postings.filter(p => p.pageId !== pageId);
-    if (filtered.length !== originalLength) {
-      if (filtered.length === 0) {
-        batch.del(key);
-      } else {
-        batch.put(key, filtered);
+  if (wordIds) {
+    // Optimized path: only touch the specific wordIds we know about
+    const affectedWordIds = [];
+    for (const wordId of wordIds) {
+      const key = KEYS.INVERTED_INDEX + wordId;
+      let postings = [];
+      try {
+        postings = await database.get(key);
+      } catch (e) {
+        if (e.code !== 'LEVEL_NOT_FOUND') throw e;
+        continue;
       }
-      deleted++;
+      if (!Array.isArray(postings)) continue;
+      const originalLength = postings.length;
+      const filtered = postings.filter(p => p.pageId !== pageId);
+      if (filtered.length !== originalLength) {
+        affectedWordIds.push(wordId);
+        if (filtered.length === 0) {
+          batch.del(key);
+        } else {
+          batch.put(key, filtered);
+        }
+        deleted++;
+      }
     }
-  }
-
-  if (deleted > 0) {
-    await batch.write();
+    if (deleted > 0) {
+      await batch.write();
+      const freqBatch = database.batch();
+      for (const wid of affectedWordIds) {
+        const freqKey = KEYS.WORD_FREQ + wid;
+        try {
+          const freq = await database.get(freqKey);
+          freq - 1 <= 0 ? freqBatch.del(freqKey) : freqBatch.put(freqKey, freq - 1);
+        } catch (e) {
+          if (e.code !== 'LEVEL_NOT_FOUND') throw e;
+        }
+      }
+      await freqBatch.write();
+    }
+  } else {
+    // Fallback: scan all inverted index entries (O(total_postings))
+    const affectedWordIds = [];
+    for await (const [key, postings] of database.iterator({
+      gte: KEYS.INVERTED_INDEX,
+      lt: KEYS.INVERTED_INDEX + '~'
+    })) {
+      if (!Array.isArray(postings)) continue;
+      const originalLength = postings.length;
+      const filtered = postings.filter(p => p.pageId !== pageId);
+      if (filtered.length !== originalLength) {
+        affectedWordIds.push(parseInt(key.replace(KEYS.INVERTED_INDEX, '')));
+        if (filtered.length === 0) {
+          batch.del(key);
+        } else {
+          batch.put(key, filtered);
+        }
+        deleted++;
+      }
+    }
+    if (deleted > 0) {
+      await batch.write();
+      const freqBatch = database.batch();
+      for (const wid of affectedWordIds) {
+        const freqKey = KEYS.WORD_FREQ + wid;
+        try {
+          const freq = await database.get(freqKey);
+          freq - 1 <= 0 ? freqBatch.del(freqKey) : freqBatch.put(freqKey, freq - 1);
+        } catch (e) {
+          if (e.code !== 'LEVEL_NOT_FOUND') throw e;
+        }
+      }
+      await freqBatch.write();
+    }
   }
   return deleted;
 }
@@ -327,28 +461,7 @@ export async function getInvertedIndex(wordId) {
   }
 }
 
-/**
- * Get total number of documents containing a word
- */
-export async function getDocumentFrequency(wordId) {
-  const postings = await getInvertedIndex(wordId);
-  return postings.length;
-}
 
-/**
- * Get total number of documents in the index
- */
-export async function getTotalDocuments() {
-  const database = await getDB();
-  let count = 0;
-  for await (const [key] of database.iterator({ 
-    gte: KEYS.PAGE_DATA, 
-    lt: KEYS.PAGE_DATA + '~' 
-  })) {
-    count++;
-  }
-  return count;
-}
 
 // ============================================
 // TITLE INDEX
@@ -359,7 +472,9 @@ export async function getTotalDocuments() {
  */
 export async function storeTitleWords(pageId, titleWordEntries) {
   const database = await getDB();
+  const oldTitleWords = await getTitleWords(pageId);
   await database.put(KEYS.TITLE_WORDS + pageId, titleWordEntries);
+  await buildTitleInvertedIndex(pageId, titleWordEntries, oldTitleWords);
 }
 
 /**
@@ -374,25 +489,62 @@ export async function getTitleWords(pageId) {
   }
 }
 
-/**
- * Check if a word appears in a page's title
- */
 export async function wordInTitle(wordId, pageId) {
   const titleWords = await getTitleWords(pageId);
   return titleWords.some(tw => tw.wordId === wordId);
 }
 
+export async function buildTitleInvertedIndex(pageId, titleWordEntries, oldTitleWordEntries) {
+  const database = await getDB();
+  const batch = database.batch();
+
+  const oldWordIds = oldTitleWordEntries ? oldTitleWordEntries.map(e => e.wordId) : [];
+  const newWordIds = titleWordEntries.map(e => e.wordId);
+
+  for (const wid of oldWordIds) {
+    if (newWordIds.includes(wid)) continue;
+    const key = KEYS.TITLE_INVERTED + wid;
+    try {
+      const pageIds = await database.get(key);
+      const filtered = pageIds.filter(id => id !== pageId);
+      if (filtered.length === 0) {
+        batch.del(key);
+      } else {
+        batch.put(key, filtered);
+      }
+    } catch (e) {
+      if (e.code !== 'LEVEL_NOT_FOUND') throw e;
+    }
+  }
+
+  for (const entry of titleWordEntries) {
+    const key = KEYS.TITLE_INVERTED + entry.wordId;
+    let pageIds = [];
+    try {
+      pageIds = await database.get(key);
+    } catch (e) {
+      if (e.code !== 'LEVEL_NOT_FOUND') throw e;
+    }
+    if (!pageIds.includes(pageId)) {
+      pageIds.push(pageId);
+      batch.put(key, pageIds);
+    }
+  }
+  await batch.write();
+}
+
+export async function getPagesWithWordInTitle(wordId) {
+  const database = await getDB();
+  try {
+    return await database.get(KEYS.TITLE_INVERTED + wordId);
+  } catch (e) {
+    return [];
+  }
+}
+
 // ============================================
 // LINK RELATIONS
 // ============================================
-
-/**
- * Store child links for a page
- */
-export async function storeChildren(pageId, childPageIds) {
-  const database = await getDB();
-  await database.put(KEYS.CHILDREN + pageId, childPageIds);
-}
 
 /**
  * Get children page IDs for a parent page
@@ -434,19 +586,22 @@ export async function getParents(pageId) {
  * Add a parent-child relationship
  */
 export async function addLink(parentId, childId) {
-  // Add child to parent's children list
-  let children = await getChildren(parentId);
+  const database = await getDB();
+  const batch = database.batch();
+
+  const children = await getChildren(parentId);
   if (!children.includes(childId)) {
     children.push(childId);
-    await storeChildren(parentId, children);
+    batch.put(KEYS.CHILDREN + parentId, children);
   }
-  
-  // Add parent to child's parents list
-  let parents = await getParents(childId);
+
+  const parents = await getParents(childId);
   if (!parents.includes(parentId)) {
     parents.push(parentId);
-    await storeParents(childId, parents);
+    batch.put(KEYS.PARENTS + childId, parents);
   }
+
+  await batch.write();
 }
 
 // ============================================
@@ -483,11 +638,11 @@ export async function getPageStats(pageId) {
 export async function getAllPageIds() {
   const database = await getDB();
   const pageIds = [];
-  for await (const [key] of database.iterator({ 
-    gte: KEYS.PAGE_DATA, 
-    lt: KEYS.PAGE_DATA + '~' 
+  for await (const [key] of database.iterator({
+    gte: KEYS.ID_TO_URL,
+    lt: KEYS.ID_TO_URL + '~'
   })) {
-    pageIds.push(parseInt(key.replace(KEYS.PAGE_DATA, '')));
+    pageIds.push(parseInt(key.replace(KEYS.ID_TO_URL, '')));
   }
   return pageIds.sort((a, b) => a - b);
 }
@@ -505,13 +660,115 @@ export async function getDBStats() {
   };
 }
 
-/**
- * Clear all data (for testing)
- */
+export async function precomputeWordFrequencies() {
+  const database = await getDB();
+  const wordFreqs = new Map();
+  for await (const [key, postings] of database.iterator({
+    gte: KEYS.INVERTED_INDEX,
+    lt: KEYS.INVERTED_INDEX + '~'
+  })) {
+    if (!Array.isArray(postings)) continue;
+    const wordId = parseInt(key.replace(KEYS.INVERTED_INDEX, ''));
+    wordFreqs.set(wordId, postings.length);
+  }
+  const batch = database.batch();
+  for (const [wordId, count] of wordFreqs) {
+    batch.put(KEYS.WORD_FREQ + wordId, count);
+  }
+  await batch.write();
+  return wordFreqs.size;
+}
+
 export async function clearDB() {
   const database = await getDB();
   await database.clear();
   await database.put(KEYS.COUNTERS, { ...INITIAL_COUNTERS });
+}
+
+// ============================================
+// PAGERANK
+// ============================================
+
+export async function computePageRank(options = {}) {
+  const d = options.damping || CONFIG.search.pagerankDamping || 0.85;
+  const epsilon = options.epsilon || CONFIG.search.pagerankEpsilon || 0.0001;
+  const maxIterations = options.maxIterations || 100;
+
+  const pageIds = await getAllPageIds();
+  const N = pageIds.length;
+  if (N === 0) return { scores: {}, iterations: 0, converged: false };
+
+  const outlinksMap = new Map();
+  for (const pageId of pageIds) {
+    outlinksMap.set(pageId, await getChildren(pageId));
+  }
+
+  let pr = new Map();
+  for (const pageId of pageIds) pr.set(pageId, 1 / N);
+
+  let iterations = 0;
+  let converged = false;
+
+  for (iterations = 0; iterations < maxIterations; iterations++) {
+    let danglingSum = 0;
+    for (const pageId of pageIds) {
+      const outlinks = outlinksMap.get(pageId) || [];
+      if (outlinks.length === 0) danglingSum += pr.get(pageId) || 0;
+    }
+
+    const newPr = new Map();
+    for (const pageId of pageIds) newPr.set(pageId, 0);
+
+    for (const srcId of pageIds) {
+      const outlinks = outlinksMap.get(srcId) || [];
+      const contrib = (pr.get(srcId) || 0) / (outlinks.length || 1);
+      for (const targetId of outlinks) {
+        if (targetId === srcId) continue;
+        newPr.set(targetId, (newPr.get(targetId) || 0) + contrib);
+      }
+    }
+
+    for (const pageId of pageIds) {
+      newPr.set(pageId, (1 - d) / N + d * (newPr.get(pageId) || 0) + d * (danglingSum / N));
+    }
+
+    let maxDelta = 0;
+    for (const pageId of pageIds) {
+      const newVal = newPr.get(pageId) || 0;
+      const oldVal = pr.get(pageId) || 0;
+      const delta = Math.abs(newVal - oldVal);
+      if (delta > maxDelta) maxDelta = delta;
+    }
+
+    for (const pageId of pageIds) {
+      pr.set(pageId, newPr.get(pageId) || 0);
+    }
+
+    if (maxDelta < epsilon) {
+      converged = true;
+      break;
+    }
+  }
+
+  const database = await getDB();
+  const batch = database.batch();
+  for (const [pageId, score] of pr) {
+    batch.put(KEYS.PAGE_RANK + pageId, score);
+  }
+  await batch.write();
+
+  const result = {};
+  for (const [pageId, score] of pr) result[pageId] = score;
+  return { scores: result, iterations, converged };
+}
+
+export async function getPageRank(pageId) {
+  const database = await getDB();
+  try {
+    return await database.get(KEYS.PAGE_RANK + pageId);
+  } catch (e) {
+    return null;
+  }
 }
 
 export default {
@@ -525,23 +782,25 @@ export default {
   getPageIdByUrl,
   getUrlByPageId,
   storeUrlMapping,
-  urlExists,
   storePageData,
   getPageData,
   getLastModified,
   getWordId,
   getWordById,
+  wordExists,
+  getWordFrequency,
   getAllWords,
   storeForwardIndex,
   getForwardIndex,
   addToInvertedIndex,
   getInvertedIndex,
-  getDocumentFrequency,
+  clearPageFromInvertedIndex,
   getTotalDocuments,
+  incrementTotalDocuments,
   storeTitleWords,
   getTitleWords,
   wordInTitle,
-  storeChildren,
+  getPagesWithWordInTitle,
   getChildren,
   storeParents,
   getParents,
@@ -550,5 +809,8 @@ export default {
   getPageStats,
   getAllPageIds,
   getDBStats,
+  computePageRank,
+  getPageRank,
+  precomputeWordFrequencies,
   clearDB
 };

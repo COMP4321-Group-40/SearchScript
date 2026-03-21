@@ -105,6 +105,14 @@ async function fetchPage(url) {
         responseType: 'text',
         validateStatus: (status) => (status >= 200 && status < 300)
       });
+
+      // Only process HTML responses — skip JSON, PDF, CSV, plain text, etc.
+      const contentType = (response.headers['content-type'] || '').toLowerCase();
+      if (!contentType.includes('text/html')) {
+        console.log(`Skipping non-HTML: ${url} (Content-Type: ${contentType})`);
+        return { pageData: null, childUrls: [] };
+      }
+
       const lastModified = response.headers['last-modified']
         ? parseLastModified(response.headers['last-modified'])
         : getDefaultLastModified();
@@ -213,12 +221,14 @@ async function processAndIndexPage(url, parentPageId = null) {
     let pageId;
     
     if (existingPageId !== null) {
-      // Clear stale inverted index entries before re-indexing
-      await db.clearPageFromInvertedIndex(existingPageId);
+      const existingForward = await db.getForwardIndex(existingPageId);
+      const wordIds = existingForward.map(e => e.wordId);
+      await db.clearPageFromInvertedIndex(existingPageId, wordIds);
       pageId = existingPageId;
     } else {
       // Create new page ID
       pageId = await db.getNextPageId();
+      await db.incrementTotalDocuments(1);
     }
 
     // Store URL mapping
@@ -356,7 +366,17 @@ export async function crawl(options = {}) {
   console.log(`  Total pages indexed: ${stats.totalPages}`);
   console.log(`  Next page ID: ${stats.nextPageId}`);
   console.log(`  Next word ID: ${stats.nextWordId}`);
-  
+
+  if (state.crawled > 0) {
+    console.log(`\nPre-computing word frequencies...`);
+    const freqCount = await db.precomputeWordFrequencies();
+    console.log(`  ${freqCount} word frequencies cached.`);
+
+    console.log(`\nComputing PageRank...`);
+    const prResult = await db.computePageRank();
+    console.log(`  Iterations: ${prResult.iterations}, Converged: ${prResult.converged}`);
+  }
+
   return {
     crawled: state.crawled,
     skipped: state.skipped,
@@ -365,9 +385,51 @@ export async function crawl(options = {}) {
   };
 }
 
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const options = {};
+  
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case '--seed-url':
+        options.seedUrl = args[++i];
+        break;
+      case '--max-pages':
+        options.maxPages = parseInt(args[++i], 10);
+        if (isNaN(options.maxPages) || options.maxPages < 1) {
+          console.error('Error: --max-pages must be a positive integer');
+          process.exit(1);
+        }
+        break;
+      case '--backup':
+        options.seedUrl = CONFIG.crawler.backupUrl;
+        console.log('Using backup seed URL:', options.seedUrl);
+        break;
+      case '--help':
+        console.log('Usage: node src/crawler/spider.js [options]');
+        console.log('Options:');
+        console.log('  --seed-url <url>   Override the seed URL');
+        console.log('  --max-pages <n>    Override the max pages (default: 300)');
+        console.log('  --backup           Use the backup seed URL from config');
+        console.log('  --help             Show this help message');
+        process.exit(0);
+        break;
+      default:
+        if (args[i].startsWith('--')) {
+          console.error(`Unknown option: ${args[i]}`);
+          console.error('Use --help for usage information');
+          process.exit(1);
+        }
+    }
+  }
+  
+  return options;
+}
+
 // Run if executed directly
 if (process.argv[1] && process.argv[1].endsWith('spider.js')) {
-  crawl()
+  const cliOptions = parseArgs();
+  crawl(cliOptions)
     .then(() => process.exit(0))
     .catch(e => {
       console.error('Fatal error:', e);

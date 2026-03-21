@@ -7,95 +7,325 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="container">
-    <!-- Header & Search Form -->
-    <header class="header">
+
+<div id="app" class="app-layout">
+  <!-- Left Sidebar: Keyword Browser -->
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Keyword Browser</span>
+    </div>
+    <section class="sidebar-section sidebar-section--grow">
+      <div class="section-header">
+        <div class="sort-toggle">
+          <button id="sortAlpha" class="sort-btn sort-btn--active" onclick="setKeywordSort('alpha')">A-Z</button>
+          <button id="sortFreq" class="sort-btn" onclick="setKeywordSort('freq')">Freq</button>
+        </div>
+      </div>
+      <div id="letterFilter" class="letter-filter"></div>
+      <div id="keywordsContainer" class="keywords-container">
+        <div id="keywordsLoading" class="loading-inline">Loading...</div>
+        <ul id="keywordsList" class="keywords-list"></ul>
+        <div id="keywordsPagination" class="pagination"></div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Top Bar -->
+    <header class="topbar">
       <h1 class="logo">COMP4321 Search</h1>
-      <form action="/search" method="GET" class="search-form">
+    </header>
+
+    <!-- Search Area -->
+    <div class="search-area">
+      <form id="searchForm" class="search-form" autocomplete="off">
         <div class="search-box">
-          <input 
-            type="text" 
-            name="q" 
-            value="<%= query %>" 
-            placeholder="Enter search terms... (use &quot;quotes&quot; for phrases)"
+          <input
+            type="text"
+            id="searchInput"
+            name="q"
+            value="<%= typeof query !== 'undefined' ? query.replace(/"/g, '&quot;') : '' %>"
+            placeholder='Search... (use "quotes" for phrases, -term or -"phrase" to exclude)'
             class="search-input"
             autofocus
           >
           <button type="submit" class="search-btn">Search</button>
         </div>
       </form>
-    </header>
+      <p class="search-hint">
+        Tip: <code>"phrase"</code> for exact match &nbsp;|&nbsp;
+        <code>-term</code> or <code>-"phrase"</code> to exclude &nbsp;|&nbsp;
+        Click sidebar keywords to search
+      </p>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="statusBar" class="status-bar" style="display:none">
+      <span id="statusText"></span>
+      <span id="statusMeta"></span>
+    </div>
 
     <!-- Error -->
-    <% if (error) { %>
-      <div class="error"><%= error %></div>
-    <% } %>
+    <div id="errorBox" class="error-box" style="display:none"></div>
+
+    <!-- Loading -->
+    <div id="loadingOverlay" class="loading-overlay" style="display:none">
+      <div class="spinner"></div>
+    </div>
 
     <!-- Results -->
-    <% if (results !== null) { %>
-      <div class="results-info">
-        Found <strong><%= resultCount %></strong> result<%= resultCount !== 1 ? 's' : '' %> 
-        for "<strong><%= query %></strong>" 
-        (<%= searchTime %>ms)
-      </div>
+    <div id="resultsContainer" class="results-container"></div>
+  </main>
 
-      <% if (results.length === 0) { %>
+  <!-- Right Sidebar: Query History -->
+  <aside id="historySidebar" class="sidebar-right">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Query History</span>
+    </div>
+    <div class="history-panel">
+      <div class="section-header">
+        <div></div>
+        <button id="clearHistory" class="small-btn">Clear</button>
+      </div>
+      <ul id="historyList" class="history-list"></ul>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ========== State ==========
+  let kwPage = 1, kwLetter = 'ALL', kwSort = 'alpha';
+  let kwCache = {};
+
+  // ========== DOM refs ==========
+  const $ = id => document.getElementById(id);
+  const searchForm   = $('searchForm');
+  const searchInput  = $('searchInput');
+  const resultsCont  = $('resultsContainer');
+  const statusBar    = $('statusBar');
+  const statusText   = $('statusText');
+  const statusMeta   = $('statusMeta');
+  const errorBox      = $('errorBox');
+  const loading       = $('loadingOverlay');
+  const historyList   = $('historyList');
+  const letterFilter  = $('letterFilter');
+  const keywordsList  = $('keywordsList');
+  const keywordsPag   = $('keywordsPagination');
+
+  // ========== Init ==========
+  function init() {
+    searchForm.addEventListener('submit', onSearchSubmit);
+    $('clearHistory').addEventListener('click', clearHistory);
+    renderHistory();
+    loadLetters();
+    loadKeywords(kwLetter, kwPage);
+    if (searchInput.value.trim()) doSearch(searchInput.value);
+  }
+
+  // ========== Search ==========
+  function onSearchSubmit(e) {
+    e.preventDefault();
+    const q = searchInput.value.trim();
+    if (q) doSearch(q);
+  }
+
+  function doSearch(query) {
+    searchInput.value = query;
+    showLoading(true);
+    hideError();
+    statusBar.style.display = 'none';
+    resultsCont.innerHTML = '';
+
+    fetch(`/api/search?q=${encodeURIComponent(query)}`)
+      .then(r => r.json())
+      .then(data => {
+        showLoading(false);
+        if (data.error) { showError(data.error); return; }
+        addToHistory(query);
+        renderResults(data);
+      })
+      .catch(err => { showLoading(false); showError('Search failed: ' + err.message); });
+  }
+
+  function renderResults(data) {
+    statusText.textContent = `Found ${data.resultCount} result${data.resultCount !== 1 ? 's' : ''} for "${data.query}"`;
+    statusMeta.textContent = `(${data.searchTime}ms)`;
+    statusBar.style.display = 'flex';
+
+    if (data.resultCount === 0) {
+      resultsCont.innerHTML = `
         <div class="no-results">
           <p>No results found.</p>
-          <p class="hint">Try different keywords or use "quotes" for phrase search.</p>
+          <p class="hint">Try different keywords, use quotes for phrases, or exclude with -term or -"phrase".</p>
+        </div>`;
+      return;
+    }
+
+    let parseInfo = '';
+    if (data.parsedQuery) {
+      const p = data.parsedQuery;
+      const parts = [];
+      const allExcluded = [...new Set([...(p.excludeTerms || []).map(w => `"${w}"`), ...(p.excludePhrases || []).map(q => `"${q.join(' ')}"`)])];
+      if (allExcluded.length) parts.push(`excluding: ${allExcluded.join(', ')}`);
+      if (p.phrases && p.phrases.length) parts.push(`phrases: ${p.phrases.map(q=>q.join(' ')).join('; ')}`);
+      parseInfo = parts.length ? `<span class="parse-hint">(${parts.join(' | ')})</span>` : '';
+    }
+
+    let html = `<div class="results-info-row">${parseInfo}</div><div class="results-list">`;
+    data.results.forEach((r, i) => {
+      html += `
+      <div class="result-card" id="result-${r.pageId}">
+        <div class="result-card__header">
+          <span class="result-rank">${i+1}</span>
+          <span class="result-score">${r.score.toFixed(4)}</span>
+          <button class="similar-btn" onclick="window.__similar(${r.pageId}, ${JSON.stringify(r.keywords || []).replace(/"/g, '&quot;')})" title="Search with top keywords from this page">Get Similar</button>
         </div>
-      <% } %>
-
-      <% results.forEach(function(result, idx) { %>
-        <div class="result-item">
-          <div class="result-header">
-            <span class="result-rank"><%= idx + 1 %>.</span>
-            <span class="result-score" title="Relevance score"><%= result.score %></span>
-          </div>
-          
-          <h2 class="result-title">
-            <a href="<%= result.url %>" target="_blank" rel="noopener"><%= result.title %></a>
-          </h2>
-          
-          <div class="result-url"><%= result.url %></div>
-          
-          <div class="result-meta">
-            <span>Last modified: <%= result.lastModifiedFormatted %></span>
-            <span>Size: <%= result.size %> words</span>
-          </div>
-
-          <% if (result.keywords && result.keywords.length > 0) { %>
-            <div class="result-keywords">
-              <% result.keywords.forEach(function(kw) { %>
-                <span class="keyword"><%= kw.word %> <small><%= kw.freq %></small></span>
-              <% }); %>
-            </div>
-          <% } %>
-
-          <% if (result.parentUrls && result.parentUrls.length > 0) { %>
-            <div class="result-links">
-              <strong>Parent links:</strong>
-              <ul>
-                <% result.parentUrls.forEach(function(url) { %>
-                  <li><a href="<%= url %>" target="_blank" rel="noopener"><%= url %></a></li>
-                <% }); %>
-              </ul>
-            </div>
-          <% } %>
-
-          <% if (result.childUrls && result.childUrls.length > 0) { %>
-            <div class="result-links">
-              <strong>Child links:</strong>
-              <ul>
-                <% result.childUrls.forEach(function(url) { %>
-                  <li><a href="<%= url %>" target="_blank" rel="noopener"><%= url %></a></li>
-                <% }); %>
-              </ul>
-            </div>
-          <% } %>
+        <h2 class="result-title"><a href="${r.url}" target="_blank" rel="noopener">${escHtml(r.title)}</a></h2>
+        <div class="result-url">${escHtml(r.url)}</div>
+        <div class="result-meta">
+          <span>${r.lastModifiedFormatted || 'N/A'}</span>
+          <span>${r.size} words</span>
         </div>
-      <% }); %>
-    <% } %>
-  </div>
+        ${r.keywords && r.keywords.length ? `
+        <div class="result-keywords">
+          ${r.keywords.map(k => `<button class="kw-tag" onclick="addKeyword('${escHtml(k.word)}')">${escHtml(k.word)} <small>${k.freq}</small></button>`).join('')}
+        </div>` : ''}
+        <div class="result-links-toggle">
+          ${r.parentUrls && r.parentUrls.length ? `<details><summary>Parent links (${r.parentUrls.length})</summary><ul class="link-list">${r.parentUrls.map(u => `<li><a href="${escHtml(u)}" target="_blank">${escHtml(u)}</a></li>`).join('')}</ul></details>` : ''}
+          ${r.childUrls && r.childUrls.length ? `<details><summary>Child links (${r.childUrls.length})</summary><ul class="link-list">${r.childUrls.map(u => `<li><a href="${escHtml(u)}" target="_blank">${escHtml(u)}</a></li>`).join('')}</ul></details>` : ''}
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+    resultsCont.innerHTML = html;
+  }
+
+  // ========== Get Similar Pages (Rocchio-style) ==========
+  window.__similar = function(pageId, keywords) {
+    if (!keywords || !keywords.length) return;
+    var top5 = keywords.slice().sort(function(a, b) { return b.freq - a.freq; }).slice(0, 5).map(function(k) { return k.word; }).join(' ');
+    $('searchInput').value = top5;
+    doSearch(top5);
+  };
+
+  window.addKeyword = function(word) {
+    const cur = searchInput.value.trim();
+    if (cur) searchInput.value = cur + ' ' + word;
+    else searchInput.value = word;
+    searchInput.focus();
+  };
+
+  // ========== Query History ==========
+  function addToHistory(query) {
+    let hist = JSON.parse(sessionStorage.getItem('sq_history') || '[]');
+    hist = hist.filter(h => h.q !== query);
+    hist.unshift({ q: query, t: Date.now() });
+    hist = hist.slice(0, 20);
+    sessionStorage.setItem('sq_history', JSON.stringify(hist));
+    renderHistory();
+  }
+
+  function renderHistory() {
+    const hist = JSON.parse(sessionStorage.getItem('sq_history') || '[]');
+    if (!hist.length) {
+      historyList.innerHTML = '<li class="empty-hint">No searches yet</li>';
+      return;
+    }
+    historyList.innerHTML = hist.map(h => {
+      const d = new Date(h.t);
+      const ts = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      return `<li class="history-item"><button class="history-btn" onclick="doSearch2('${escHtml(h.q).replace(/'/g, "\\'")}')" title="${escHtml(h.q)}">${escHtml(h.q)}</button><span class="history-time">${ts}</span></li>`;
+    }).join('');
+  }
+
+  window.doSearch2 = function(q) { doSearch(q); };
+
+  function clearHistory() {
+    sessionStorage.removeItem('sq_history');
+    renderHistory();
+  }
+
+  // ========== Keyword Browser ==========
+  function loadLetters() {
+    fetch('/api/keywords?page=1&letter=ALL')
+      .then(r => r.json())
+      .then(data => {
+        renderLetters(data.letters || []);
+      })
+      .catch(() => {});
+  }
+
+  function renderLetters(letters) {
+    letterFilter.innerHTML = letters.map(l =>
+      `<button class="letter-btn ${kwLetter === l ? 'letter-btn--active' : ''}" onclick="loadKeywords('${l}',1)">${l}</button>`
+    ).join('');
+  }
+
+  window.loadKeywords = function(letter, page) {
+    kwLetter = letter; kwPage = page;
+    const cacheKey = letter + ':' + kwSort + ':' + page;
+    if (kwCache[cacheKey]) { renderKeywords(kwCache[cacheKey]); return; }
+    $('keywordsLoading').style.display = 'block';
+    keywordsList.innerHTML = '';
+    fetch('/api/keywords?letter=' + letter + '&page=' + page + '&sort=' + kwSort)
+      .then(r => r.json())
+      .then(data => {
+        kwCache[cacheKey] = data;
+        $('keywordsLoading').style.display = 'none';
+        renderKeywords(data);
+      })
+      .catch(() => { $('keywordsLoading').style.display = 'none'; keywordsList.innerHTML = '<li class="empty-hint">Failed to load</li>'; });
+  };
+
+  window.setKeywordSort = function(sort) {
+    kwSort = sort;
+    kwPage = 1;
+    kwCache = {};
+    var sa = $('sortAlpha'), sf = $('sortFreq');
+    if (sa) sa.classList.toggle('sort-btn--active', sort === 'alpha');
+    if (sf) sf.classList.toggle('sort-btn--active', sort === 'freq');
+    window.loadKeywords(kwLetter, kwPage);
+  };
+
+  function renderKeywords(data) {
+    if (!data.keywords || !data.keywords.length) {
+      keywordsList.innerHTML = '<li class="empty-hint">No keywords</li>';
+      keywordsPag.innerHTML = '';
+      return;
+    }
+    keywordsList.innerHTML = data.keywords.map(k =>
+      `<li class="keyword-item"><button class="keyword-btn" onclick="addKeyword('${escHtml(k.word).replace(/'/g, "\\'")}')" title="Search for ${escHtml(k.word)}">${escHtml(k.word)}</button><span class="kw-count">${k.pageCount}</span></li>`
+    ).join('');
+
+    // Pagination
+    const totalPages = Math.ceil(data.total / data.perPage);
+    if (totalPages <= 1) { keywordsPag.innerHTML = ''; return; }
+    let pHtml = '';
+    if (data.page > 1) pHtml += `<button class="pag-btn" onclick="loadKeywords('${kwLetter}',${data.page-1})">&laquo;</button>`;
+    pHtml += `<span class="pag-info">${data.page}/${totalPages}</span>`;
+    if (data.page < totalPages) pHtml += `<button class="pag-btn" onclick="loadKeywords('${kwLetter}',${data.page+1})">&raquo;</button>`;
+    keywordsPag.innerHTML = pHtml;
+
+    // Update letter active
+    document.querySelectorAll('.letter-btn').forEach(b => {
+      b.classList.toggle('letter-btn--active', b.textContent === kwLetter);
+    });
+  }
+
+  // ========== UI Helpers ==========
+  function showLoading(v) { loading.style.display = v ? 'flex' : 'none'; }
+  function hideError() { errorBox.style.display = 'none'; }
+  function showError(msg) { errorBox.textContent = msg; errorBox.style.display = 'block'; }
+  function escHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+  // ========== Start ==========
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
 </body>
 </html>

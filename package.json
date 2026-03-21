@@ -8,6 +8,7 @@
     "crawl": "node src/crawler/spider.js",
     "generate": "node src/test/generateResult.js",
     "serve": "node src/web/app.js",
+    "pagerank": "node src/search/computePageRank.js",
     "test": "node src/test/generateResult.js"
   },
   "dependencies": {
