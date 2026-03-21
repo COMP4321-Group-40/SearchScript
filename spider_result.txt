@@ -12,28 +12,28 @@ CSE department of HKUST
 https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse.htm
 2023-05-16 05:03:16, 15
 cse 2; depart 2; hkust 2; admiss 2; pg 1; ug 1; main 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse/PG.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse/UG.htm
-https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
 -------------------------------------------------------------------------------
 
 News
 https://www.cse.ust.hk/~kwtleung/COMP4321/news.htm
 2023-05-16 05:03:16, 9
 new 4; bbc 1; cnn 1; main 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/news/bbc.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/news/cnn.htm
-https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
 -------------------------------------------------------------------------------
 
 books
 https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
 2023-05-16 05:03:16, 29
 book 2; articl 1; read 1; autom 1; keyword 1; classif 1; inform 1; retriev 1; gener 1; machin 1
+https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/books/book1.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/books/book2.htm
 https://www.cse.ust.hk/~kwtleung/COMP4321/books/book3.htm
-https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
 -------------------------------------------------------------------------------
 
 Movie Index Page

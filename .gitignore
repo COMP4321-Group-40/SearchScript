@@ -15,4 +15,8 @@ data/
 # OS
 .DS_Store
 
+# test results
+test_results.json
+spider_result_test.txt
+
 *.zip

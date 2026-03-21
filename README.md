@@ -42,7 +42,15 @@ Computes PageRank scores for all indexed pages using power iteration over the li
 
 > **Note:** `npm run crawl` implicitly computes PageRank
 
-**Step 5 — Start the web interface:**
+**Step 5 — Run tests (optional):**
+
+```bash
+npm run test
+```
+
+Runs the comprehensive test suite against the live database, covering Porter stemmer correctness, tokenizer output, query parsing, search result scoring, DB storage integrity, phrase search, excluded terms, spider_result.txt generation, and PageRank convergence.
+
+**Step 6 — Start the web interface:**
 
 ```bash
 npm run serve      # http://localhost:3000
@@ -82,7 +90,7 @@ src/
 │   ├── porterStemmer.js   # Porter Stemming Algorithm (steps 1a–5b, from scratch)
 │   └── tokenizer.js        # Tokenization, stopword filtering, TF calculation
 ├── search/
-|   ├── computePageRank.js # Computes PageRank
+│   ├── computePageRank.js # Computes PageRank
 │   └── engine.js          # VSM retrieval with cosine similarity
 ├── storage/
 │   └── db.js              # LevelDB storage layer (31 functions, 16 key prefixes)
@@ -91,7 +99,8 @@ src/
 │   ├── views/index.ejs    # Search interface (EJS + vanilla JS SPA)
 │   └── public/style.css   # Stylesheet
 ├── test/
-│   └── generateResult.js  # Generates spider_result.txt
+│   ├── generateResult.js  # Generates spider_result.txt
+│   └── run_tests.js      # Test suite (npm run test)
 └── utils/
     └── helpers.js         # Utility functions (date formatting, etc.)
 ```
@@ -204,4 +213,6 @@ The server exposes JSON endpoints for programmatic access:
 
 - No external search APIs or high-level NLP libraries (no Lucene, `natural`, or ElasticSearch)
 - Porter Stemmer and stopword filtering implemented from scratch
+- Cyclic links handled via visited set
+- Maximum 300 pages indexed
 - Incremental updates mandatory — rebuilding from scratch is forbidden

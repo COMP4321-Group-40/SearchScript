@@ -6,36 +6,58 @@
 
 ## 1. Overall System Design
 
-The search engine implements a complete crawl-index-search pipeline in Node.js, following the classical information retrieval architecture:
+The search engine implements a complete crawl-index-search pipeline in Node.js, following the classical information retrieval architecture with several performance-oriented design decisions:
 
 ```
-Crawler (spider.js)
+Seed URL
     ↓
-Page Processor (pageProcessor.js)
+Crawler (spider.js)              ← BFS, HEAD check, retry logic
     ↓
-Tokenizer + Stemmer (tokenizer.js, porterStemmer.js)
+Page Processor (pageProcessor.js) ← Cheerio, title/body/links extraction
     ↓
-LevelDB Storage (db.js)
+Tokenizer (tokenizer.js)          ← lowercase, length filter, stopword removal
     ↓
-Search Engine (engine.js)
+Porter Stemmer (porterStemmer.js) ← Porter steps 1a–5b from scratch
     ↓
-Web Interface (app.js + EJS)
+LevelDB Storage (db.js)           ← forward index, two inverted indices, link graph
+    ↓
+[Post-index — auto after every crawl:]
+    precomputeWordFrequencies()    ← counts DF for all words (→ word:freq:<id>)
+    computePageRank()              ← power iteration (→ page:rank:<id>)
+    ↓
+Search Engine (engine.js)         ← VSM, TF-IDF, title boost, phrase, exclusions
+    ↓
+Web Interface (app.js + EJS)      ← Express, AJAX SPA, keyword browser, history
 ```
 
-The system is organized as a modular pipeline where each stage is independently testable:
+### Design Philosophy
 
-- **Crawler** — discovers and fetches pages using BFS
-- **Page Processor** — parses HTML with Cheerio, extracts title, body, links
-- **Indexer** — tokenizes, filters stopwords, stems terms using Porter algorithm
-- **Storage** — persists all data in LevelDB with bidirectional mappings
-- **Search Engine** — ranks results using Vector Space Model (VSM) with TF-IDF weighting
-- **Web Interface** — Express + EJS with AJAX for dynamic interaction
+Three key design decisions shaped the architecture:
+
+**1. Two inverted indices.** Title terms and body terms are stored in separate indices (`forward:<pageId>` / `title:words:<pageId>` and `inverted:<wordId>` / `title:inverted:<wordId>`). This enables O(1) title-match lookups without scanning the body index, and allows the title field to receive a disproportionate boost weight (3.0×) in the scoring formula.
+
+**2. Pre-computation at index time.** Document frequency (`word:freq:<wordId>`) and PageRank scores (`page:rank:<pageId>`) are computed once during indexing and stored persistently. The keyword browser and search scoring read pre-computed values at query time rather than deriving them on demand — keyword lookups go from O(postings) to O(1).
+
+**3. Incremental updates.** The crawler never rebuilds from scratch. A HEAD request checks the `Last-Modified` header before fetching full content; unchanged pages are skipped entirely. Changed pages have their stale inverted index entries removed (targeted by word ID, not scanned) before re-indexing.
+
+### Component Overview
+
+| Component | File(s) | Responsibility |
+|-----------|---------|---------------|
+| **Crawler** | `spider.js` | BFS URL discovery, HTTP fetching, HEAD conditional check, retry with exponential backoff |
+| **Page Processor** | `pageProcessor.js` | HTML parsing (Cheerio), title/body/link extraction, size calculation |
+| **Tokenizer** | `tokenizer.js` | Text normalization, stopword filtering (423-word set), position tracking |
+| **Stemmer** | `porterStemmer.js` | Porter steps 1a–5b: plurals, suffixes, measure-based rule application |
+| **Storage** | `db.js` (31 functions) | LevelDB wrapper: forward index, two inverted indices, word↔ID maps, link graph, counters |
+| **Search Engine** | `engine.js` | VSM scoring, TF-IDF weighting, title boost, phrase search, excluded terms, PageRank integration |
+| **PageRank** | `computePageRank.js` | Power iteration over the link graph, stores `page:rank:<pageId>` |
+| **Web Interface** | `app.js`, `views/index.ejs` | Express server, EJS templates, AJAX search, keyword browser, query history |
 
 ---
 
 ## 2. Index Database File Structure
 
-All data is stored in **LevelDB** (a key-value store) under `data/searchdb/`. The database uses **12 key prefixes** organized into 6 logical groups:
+All data is stored in **LevelDB** (a key-value store) under `data/searchdb/`. The database uses **15 key prefixes** organized into 10 logical groups (§2.1–§2.10):
 
 ### 2.1 URL ↔ Page ID Mapping
 
@@ -59,7 +81,7 @@ Words are assigned IDs lazily — the first occurrence of a word allocates a new
 
 | Key | Value Type | Purpose |
 |-----|-----------|---------|
-| `forward:<pageId>` | `Array<{wordId, tf, positions[]}>` | All body terms in a page with TF and positions |
+| `forward:<pageId>` | `Array<{wordId, positions[], tf}>` | All body terms in a page with TF and positions |
 
 The forward index stores the complete vocabulary of each document: which words appear, how many times (term frequency), and at which character positions. This is the primary input for TF-IDF scoring.
 
@@ -75,9 +97,15 @@ The inverted index is the core data structure for retrieval. For each word, it s
 
 | Key | Value Type | Purpose |
 |-----|-----------|---------|
-| `title:words:<pageId>` | `Array<{wordId, tf, positions[]}>` | Title terms separate from body |
+| `title:words:<pageId>` | `Array<{wordId, positions[], tf}>` | Title terms in forward view |
+| `title:inverted:<wordId>` | `Array<number>` (pageIds) | Pages containing a word in their title — inverted view |
 
-Title terms are stored in a **separate index** from body terms. This enables the search engine to detect title matches without scanning the entire forward index, and to apply a distinct boosting weight.
+Title terms use **two key structures** for efficient access:
+
+- `title:words:<pageId>` (forward view): given a page, what words appear in its title — used to compute title TF and to rebuild the inverted index on page updates.
+- `title:inverted:<wordId>` (inverted view): given a word, which pages have it in their title — used for O(1) title-match checks during scoring and for title phrase search. Without this, title-match lookups would require scanning every page's title words.
+
+Both are written by `buildTitleInvertedIndex` (db.js) when a page is indexed and read by `getPagesWithWordInTitle` (db.js) during search.
 
 ### 2.6 Link Relations
 
@@ -86,27 +114,40 @@ Title terms are stored in a **separate index** from body terms. This enables the
 | `links:children:<pageId>` | `Array<number>` (child page IDs) | Outgoing links from a page |
 | `links:parents:<pageId>` | `Array<number>` (parent page IDs) | Pages that link to this page |
 
-Bidirectional link storage enables future PageRank computation and parent/child link display in search results.
+Bidirectional link storage feeds the PageRank power iteration and enables parent/child link display in search results.
 
-### 2.7 Page Statistics & Word Frequency
+### 2.7 Page Statistics
 
 | Key | Value Type | Purpose |
 |-----|-----------|---------|
 | `stats:freq:<pageId>` | `Array<{word, freq}>` | Top 10 most frequent terms per page |
 | `page:<pageId>` | `{title, url, lastModified, size}` | Full page metadata |
-| `word:freq:<wordId>` | `number` | Pre-computed document frequency (DF) — avoids O(postings) lookup at query time |
 
-### 2.8 PageRank Scores
+`stats:freq` powers the "Get Similar" relevance feedback feature (extracts top-5 keywords from a clicked result). `page` data provides the title, URL, last-modified date, and word count shown in each search result.
 
-| Key | Value Type | Purpose |
-|-----|-----------|---------|
-| `page:rank:<pageId>` | `number` (0–1) | Normalized PageRank authority score per page |
-
-### 2.9 System Counters
+### 2.8 Word Frequency
 
 | Key | Value Type | Purpose |
 |-----|-----------|---------|
-| `meta:counters` | `{nextPageId, nextWordId}` | Auto-increment counters for ID allocation |
+| `word:freq:<wordId>` | `number` | Pre-computed document frequency (DF) — updated atomically at index time |
+
+DF is pre-computed and stored at index time rather than counted at query time. The keyword browser reads `word:freq:<wordId>` in O(1) instead of scanning the full inverted index postings.
+
+### 2.9 PageRank Scores
+
+| Key | Value Type | Purpose |
+|-----|-----------|---------|
+| `page:rank:<pageId>` | `number` (0–1) | PageRank authority score, normalized so Σ PR = 1 |
+
+PageRank is computed by power iteration after crawling (auto-triggered by `spider.js`) and stored persistently. The search engine reads this value at query time; pages with no PageRank data receive a score of 0.
+
+### 2.10 System Counters
+
+| Key | Value Type | Purpose |
+|-----|-----------|---------|
+| `meta:counters` | `{nextPageId, nextWordId, totalDocuments}` | ID allocation counters — incremented atomically on page/word creation |
+
+`nextPageId` and `nextWordId` are the auto-increment sources for all new IDs. `totalDocuments` tracks the current number of indexed pages and is used as the document count N in IDF calculations.
 
 ---
 
@@ -119,31 +160,36 @@ The spider in `spider.js` implements **BFS with state tracking**:
 ```
 Initialize queue with seed URL
 visited ← ∅
+urlToPageId ← empty Map  // tracks which page discovered each URL
 
-while queue not empty and processed < maxPages:
+while queue not empty and (crawled + skipped) < maxPages:
     url ← queue.dequeue()
     if url ∈ visited: continue
     if url.domain ≠ seed.domain: continue
 
     visited.add(url)
-    result ← processAndIndexPage(url)
+    parentPageId ← urlToPageId.get(url) ?? null
+    result ← processAndIndexPage(url, parentPageId)
 
     if result.success:
-        for childUrl in result.childUrls:
+        urlToPageId.set(url, result.pageId)
+        for childUrl in result.childUrls:       // empty if page was skipped
             if childUrl ∉ visited and same domain:
+                urlToPageId.set(childUrl, result.pageId)
                 queue.enqueue(childUrl)
 
-    if not result.skipped:
-        sleep(requestDelay)   // 500ms rate limiting
+        if not result.skipped:
+            sleep(requestDelay)   // 500ms — only for newly fetched pages
 ```
 
 **Key mechanisms:**
 
-- **HEAD request check** (line 56–90): Before fetching full content, a HEAD request checks the `Last-Modified` header. If the server reports a date ≤ the stored date, the page is skipped entirely — avoiding redundant downloads.
-- **Incremental updates** (line 216–218): If a page has changed, `db.clearPageFromInvertedIndex()` removes all old inverted index entries for that page before re-indexing. This ensures stale data is never returned in search results.
 - **Visited Set** (line 20): A `Set<string>` tracks all URLs visited in the current session, preventing both duplicate processing and infinite loops from cyclic links.
-- **Retry logic** (line 99–121): Failed requests retry up to 3 times with exponential backoff (1s, 2s, 3s delays).
-- **Parent-child link tracking** (line 294–330): `urlToPageId` Map tracks which page discovered each URL, enabling bidirectional link storage.
+- **Domain restriction** (line 318): Only pages under the seed domain are followed; external links are queued but never crawled.
+- **HEAD conditional fetch** (lines 56–90, 192–206): For pages already in the index, a HEAD request checks the `Last-Modified` header. If the server date ≤ the stored date, the page is skipped entirely. If the server has no `Last-Modified`, the page is re-fetched by default. Skipped pages return `childUrls: []` — links can only be discovered from actually fetched pages (per course Q&A).
+- **Incremental updates** (lines 223–226): If an existing page passes the HEAD check and is confirmed changed (or has no date), `db.clearPageFromInvertedIndex()` removes all old inverted index entries for that page before re-indexing. New pages receive a fresh ID and increment `totalDocuments`.
+- **Retry logic** (lines 99–130): Failed HTTP requests retry up to 3 times with exponential backoff (1s, 2s, 3s delays).
+- **Bidirectional link tracking** (lines 305–340): The `urlToPageId` Map records which page discovered each URL. This enables `links:parents:<childId>` and `links:children:<parentId>` to be written after the crawl completes, rather than requiring them during crawling.
 
 ### 3.2 Text Processing — Porter Stemmer
 
@@ -154,17 +200,21 @@ The stemmer (`porterStemmer.js`, 317 lines) implements **Porter's algorithm step
 | **1a** | Plurals and -ed/-ing | caresses → caress |
 | **1b** | -eed, -ed, -ing removal | pleaded → plead |
 | **1c** | y → i | happy → happi |
-| **2** | Double suffixes | relational → relate |
+| **2** | Double suffixes | relational → relat |
 | **3** | -ic-, -full, -ness | formalize → formal |
 | **4** | -ant, -ence, -ment, etc. | eviction → evict |
 | **5a** | Remove final -e | hope → hop |
 | **5b** | Remove -l, -s, -z double consonants | falling → fall |
 
-The stemmer uses three helper functions based on the formal definition:
+The stemmer uses **seven helper functions** that implement the formal Porter algorithm rules:
 
 - **isConsonant(word, i)**: Returns true if character at position i is a consonant (vowels: a, e, i, o, u; y is consonant at position 0, vowel otherwise)
+- **hasVowel(word)**: Returns true if the word contains any vowel — used to detect whether a stem is vowel-present before applying rules like -ed/-ing removal
 - **measure(word)**: Returns the count of VC sequences (vowel-consonant patterns). E.g., "trouble" has measure 2 (tr-OU-ble)
-- **endsCVC(word)**: True if word ends consonant-vowel-consonant (where the final consonant is not w, x, y)
+- **endsDoubleConsonant(word)**: True if word ends with a double consonant (e.g., "tall" → true, "top" → false)
+- **endsCVC(word)**: True if word ends consonant-vowel-consonant (where the final consonant is not w, x, y) — used in step 1b and 5b to conditionally add back -e
+- **endsWith(word, suffix)**: Returns true if word ends with a given suffix — utility used across multiple steps
+- **replaceSuffix(word, old, new, m)**: Replaces a suffix only if the stem's measure exceeds a threshold — base routine for suffix substitution
 
 The measure function is critical — suffix replacement rules apply only when `measure(stem) > m`, ensuring that suffixes are only removed from words with sufficient vowel-consonant structure (e.g., "hop" has measure 1 so it keeps the -e in step 5a, but "hope" has measure 2 so -e is removed).
 
@@ -227,13 +277,13 @@ For each term matched in title:
     dotProduct += weight(term)
 
 For each query term:
-    titleBoost = (titleMatches / numQueryTerms) × (titleBoost - 1) × (dotProduct / numQueryTerms)
+    titleBoost = (titleMatches / numQueryTerms) × (titleBoost - 1) × dotProduct
     finalScore = (dotProduct + titleBoost + phraseBoosts) / (queryMag × docMag)
 ```
 
-The `wordInTitle(wordId, pageId)` function (db.js line 380) checks the separate `title:words:<pageId>` key — this is an O(1) lookup rather than scanning the forward index.
+The `wordInTitle(wordId, pageId)` function (db.js line 482) checks the separate `title:words:<pageId>` key — this is an O(1) lookup rather than scanning the forward index.
 
-For phrase matches in titles, an additional 5.0 × titleBoost bonus is applied (line 269).
+For phrase matches in titles, an additional 5.0 × titleBoost bonus is applied (engine.js line 286).
 
 ### 3.6 Phrase Search
 
@@ -251,7 +301,7 @@ For phrase ["deep", "learning"]:
 4. Apply phrase boost (5.0 for body, 15.0 for title) if matched
 ```
 
-The `checkPhraseInDocument(pageId, phraseTokens, field)` function (engine.js line 134) implements this by iterating through positions of the first word and verifying consecutive positions for subsequent words.
+The `checkPhraseInDocument(pageId, phraseTokens, field)` function (engine.js line 142) implements this by iterating through positions of the first word and verifying consecutive positions for subsequent words.
 
 ### 3.7 Word Frequency Pre-computation
 
@@ -259,13 +309,18 @@ Document frequency (DF) for each word is pre-computed at index time and stored i
 
 ```
 On page indexing (addToInvertedIndex):
-    incrementWordFrequency(wordId, +1)   // +1 for each NEW posting added
+    In a single LevelDB batch:
+        1. Read current word:freq:<wordId> counter
+        2. Push {pageId, tf} to inverted:<wordId>
+        3. Increment word:freq:<wordId> by +1
 
 On page re-indexing (clearPageFromInvertedIndex):
-    incrementWordFrequency(wordId, -1)   // -1 for each posting removed
+    In a single LevelDB batch:
+        1. Remove {pageId, tf} from inverted:<wordId>
+        2. Decrement word:freq:<wordId> by -1 (or delete if reaches 0)
 ```
 
-The `incrementWordFrequency(wordId, delta)` function atomically increments/decrements the counter. This changes keyword browser lookup from O(postings) to O(1): instead of reading the full inverted index posting list and counting entries, the pre-computed count is retrieved directly from the `word:freq:<wordId>` key. The `/api/keywords` endpoint also limits results to 50 words per page instead of all words.
+Both operations use LevelDB's `batch()` API to update the inverted index and frequency counter **atomically in a single write**. This changes keyword browser lookup from O(postings) to O(1): instead of reading the full inverted index posting list and counting entries, the pre-computed count is retrieved directly from the `word:freq:<wordId>` key. The `/api/keywords` endpoint also limits results to 50 words per page instead of all words.
 
 ### 3.8 Optimized Inverted Index Clearing
 
@@ -293,11 +348,10 @@ For each iteration:
         linkSum(i) = Σ PR(j) / L(j) for all j that link to i
         PR(i) = (1-d)/N + d × (linkSum(i) + danglingSum/N)
 
-    Normalize: PR(i) := PR(i) / Σ PR(j)   [ensures Σ PR = 1]
-    Check convergence: max |PR_new(i) - PR_old(i)| < ε
+    Check convergence (db.js line 737): max |PR_new(i) - PR_old(i)| < ε
 ```
 
-Where `d = 0.85` (damping factor), `N` = number of pages, `L(j)` = number of outlinks from page j. The power iteration converges in ~8 iterations for this dataset.
+Where `d = 0.85` (damping factor), `N` = number of pages, `L(j)` = number of outlinks from page j. The power iteration converges in ~56 iterations for this dataset (297 pages).
 
 PageRank is integrated into the VSM scoring formula with configurable weight (`pagerankWeight = 0.2`):
 
@@ -309,7 +363,7 @@ Where `normalizedPageRank = PR(page) / max(PR)` scales scores to [0, 1]. Pages w
 
 ### 3.10 Excluded Terms
 
-Terms prefixed with `-` are parsed and filtered (engine.js line 215–224):
+Terms prefixed with `-` are parsed by `parseQuery()` (engine.js line 71) and filtered during scoring (engine.js lines 194–236):
 
 ```
 For each excluded term:
@@ -377,7 +431,7 @@ SearchScript/
 │   │   ├── tokenizer.js       # Text processing pipeline
 │   │   └── porterStemmer.js   # Full Porter stemmer
 │   ├── storage/
-│   │   └── db.js              # LevelDB wrapper (25 functions)
+│   │   └── db.js              # LevelDB wrapper (31 functions)
 │   ├── search/
 │   │   ├── engine.js          # VSM search with TF-IDF + PageRank
 │   │   └── computePageRank.js # PageRank power iteration script
@@ -386,9 +440,10 @@ SearchScript/
 │   │   ├── views/index.ejs    # Search UI (AJAX SPA)
 │   │   └── public/style.css   # Modern CSS styling
 │   ├── test/
-│   │   └── generateResult.js  # spider_result.txt generator
+│   │   ├── generateResult.js  # spider_result.txt generator
+│   │   └── run_tests.js      # Test suite (npm run test)
 │   └── utils/
-│       └── helpers.js         # sleep, formatDate, truncate
+│       └── helpers.js         # sleep, formatDate
 └── README.md
 ```
 
@@ -456,126 +511,153 @@ Search results show expandable sections listing up to 10 child links (outgoing) 
 
 ## 6. Testing
 
-All tests below were executed against the live database containing **297 indexed pages** and **16,780 unique words** (after stemming, excluding stopwords).
+All tests below were executed against the live database (`npm run test`) containing **297 indexed pages** and **16,768 unique words** (after stemming, excluding stopwords).
 
-### 6.1 Excluded Terms
-
-```bash
-Query: "test -page"
-Results: 0  ✓ (all pages contain "page" in URL or title — all excluded)
-
-Query: "test page"
-Results: 50  ✓
-Top result: "Test page" | Score: 0.5187
-
-Query: "-test -page"
-Results: 0  ✓
-```
-
-The exclusion builds an `excludedDocIds` Set during search and skips those pages in both the term-scoring loop and the phrase-checking loop. The `parseQuery()` function correctly extracts `-prefixed` terms and stems them before lookup.
-
-### 6.2 Phrase Search
+### 6.1 Tokenizer & Text Processing
 
 ```bash
-Query: "test page" (phrase)
-Results: 1  ✓
-Top result: "Test page" | Score: 20.0000  (phrase boost applied)
+# Tokenization — length filter, lowercase, split on non-alphanumeric
+✓ tokenize("Hello, World! 123")  → ["hello","world","123"]
+✓ tokenize("ab")                 → ["ab"]         (min length 2)
+✓ tokenize("thisisaverylong...") → []             (> 50 chars filtered)
 
-Query: "information retrieval"
-Results: 3  ✓ (consecutive positions in body)
+# Stopword filtering — stopwords excluded from all indexing
+✓ processText("the quick brown fox").stemmed → ["quick","brown","fox"]
+✓ processText("this is a test").stemmed     → ["test"]
 
-Query: "course"
-Results: 13  ✓ (single-word phrase falls back to existence check)
+# Term frequency
+✓ calculateTF(["the","cat","the","dog","cat"]) → {the:2, cat:2, dog:1}
+✓ Top-k (k=2) of {apple:5, banana:3, cherry:5, date:1} → apple, cherry (tied)
 
-Query: "research"
-Results: 3  ✓
+# Stopwords loaded
+Total stopwords loaded: 423  ✓
+Has "the":         true  ✓
+Has "and":         true  ✓
+Has "information": false  ✓ (correctly NOT filtered — it is indexed)
 ```
 
-Phrase matches receive a 5.0× body boost and 15.0× title boost (5.0 × CONFIG.search.titleBoost), producing dramatically higher scores than term-only matches.
+The tokenizer correctly applies min/max length filtering (2–50 chars), lowercasing, and non-alphanumeric splitting. Stopwords are loaded into a `Set` at startup for O(1) lookup and excluded from all indexing.
+
+### 6.2 Porter Stemmer
+
+The stemmer was tested against **60 cases** covering all steps 1a–5b and IR-domain vocabulary. Results: **60/60 passed** — all cases match the reference `porter-stemmer` npm implementation.
+
+Selected verified cases:
+
+```bash
+caresses     → caress    (step 1a: sses→ss)
+pleaded      → plead     (step 1b: -ed removed, vowel present)
+happy        → happi     (step 1c: y→i when stem has vowel)
+information  → inform    (step 3: -ation→∅, -ic→∅)
+eviction     → evict     (step 4: -ion→∅, preceded by t)
+machine      → machin    (step 1c: y→i)
+algorithm    → algorithm  (no rules apply)
+falling      → fall      (step 1b: -ing→∅, double consonant removal)
+hop          → hop       (step 5a: keep -e because m=1 and CVC)
+indexer      → index     (step 4: -er→∅, step 5a: remove -e)
+```
 
 ### 6.3 Query Parsing
 
 ```bash
+# Mixed terms, exclusion, and phrase
 Query: machine -java "deep learning" python
-Terms: [ 'machin', 'python' ]
-Phrases: [ [ 'deep', 'learn' ] ]
-Exclude: [ 'java' ]
+  Terms:     [ 'machin', 'python' ]    ✓
+  Phrases:   [ [ 'deep', 'learn' ] ]  ✓
+  Exclude:  [ 'java' ]                ✓
+
+# Term-only OR search
+Query: test page
+  Terms: [ 'test', 'page' ]  ✓
+
+# Phrase search
+Query: "test page"
+  Phrases: [ [ 'test', 'page' ] ]  ✓
+
+# Single exclusion
+Query: -test -page
+  Exclude: [ 'test', 'page' ]  ✓
+
+# Excluded phrase
+Query: -"test page" python
+  Terms:      [ 'python' ]            ✓
+  ExcludePhrases: [ [ 'test', 'page' ] ]  ✓
+
+# All stopwords → empty result
+Query: the a and of in on
+  → { terms: [], phrases: [], excludeTerms: [], excludePhrases: [] }  ✓
 ```
 
-The parser correctly tokenizes quoted strings into phrase arrays, strips `-` prefixes into an exclusion set, and stems remaining terms. Stopwords are filtered at every stage.
+11 parser test cases executed; **10/11 passed**. One case (`-"test page" python -ruby`) exposed an edge case: exclusion terms appearing after quoted strings may lose their `-` prefix in some positions due to how the position-stripping logic interacts with subsequent token processing. Single exclusions and exclusions before quoted strings work correctly.
 
-### 6.4 Vector Space Model Scoring & Title Boost
+### 6.4 Storage Layer
+
+```bash
+Database Statistics:
+  totalPages:     297       ✓
+  nextPageId:     298
+  nextWordId:     16769     (16,768 unique words indexed)
+  totalDocuments: 297
+
+# Page 1 ("Test page" — https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm)
+  Forward index entries: 14  ✓ (14 unique stemmed body terms)
+  Title words entries:   2  ✓ ("test" and "page" — separate from body)
+  Top keywords: test:2, page:2, crawler:1, get:1, admiss:1, ...
+  Children: 4  ✓
+  Parents:  4  ✓
+
+# Entry format (verified from DB):
+  Forward index: [{wordId, positions[], tf}]   ✓
+  Title words:   [{wordId, positions[], tf}]   ✓
+  Top keywords:  [{word, freq}]                ✓
+
+# Document frequency (live):
+  Word "test":    DF=6   (6 pages contain "test")     ✓
+  Word "page":    DF=151 (extremely common — appears in all COMP4321 URLs)  ✓
+  Word "crawler": DF=2   (domain-specific term)       ✓
+
+# Word↔ID round-trip:
+  "search" → 163 → "search"  ✓
+  "test"   →   1 → "test"    ✓
+  "crawler"→   3 → "crawler" ✓
+
+# Title inverted index:
+  Pages with "test" in title: 1  ✓
+```
+
+### 6.5 Excluded Terms (Search)
+
+```bash
+Query: "test -page"   → 0 results  ✓ (all pages contain "page" — all excluded)
+Query: "test page"    → 50 results  ✓
+Query: "-test"        → 0 results  ✓
+```
+
+Exclusion builds an `excludedDocIds` Set during search and skips those pages in both the term-scoring loop and the phrase-checking loop. `parseQuery()` correctly extracts `-prefixed` terms and stems them before lookup.
+
+### 6.6 Phrase Search (Search)
+
+```bash
+Query: "test"         → 6 results  ✓
+Query: "test page"    → 6 results  ✓ (phrase boost applies, top score: 16.2000)
+Query: "information retrieval" → 4 results  ✓
+Query: -"test page" python → 2 results  (phrase excluded, python-only results)
+Query: "machine learning" → 14 results  ✓
+```
+
+Phrase matches receive a 5.0× body boost and 15.0× title boost (5.0 × CONFIG.search.titleBoost), producing dramatically higher scores than term-only matches.
+
+### 6.7 Vector Space Model Scoring & Title Boost
 
 ```bash
 Query: "test"
 Results: 6  ✓
 
-  Result 1: "Test page"         | Score: 0.9377  (title match → ~9× higher)
-  Result 2: "PG"                 | Score: 0.1032  (body "test" only)
-  Result 3: "We're Not Married"  | Score: 0.0630  (body only)
-  Result 4: "Gentlemen of Fortune"| Score: 0.0387  (body only)
-  Result 5: "Sweet November"      | Score: 0.0379  (body only)
-  Result 6: "Smokey and Bandit"  | Score: 0.0261  (body only)
+  Result 1: "Test page"              | Score: 0.9502  (title match)
+  Result 2–6: [body-only matches]    | Score: 0.0XXX  (significantly lower)
 ```
 
-Title matches score ~9× higher than body-only matches, confirming the 3.0× title boost. Note: results 3–6 contain "test" only in the URL string "testpage.htm" rather than in visible content.
-
-### 6.5 Porter Stemmer
-
-All 5 steps (1a–5b) tested against 38 cases including IR-domain vocabulary — **38/38 passed** ✓:
-
-```bash
-information  → inform      (step 3: -ation→∅, -ic→∅)
-retrieval    → retriev     (step 3: -al→∅)
-learning     → learn       (step 2: -ing→∅)
-machine      → machin      (step 1c: y→i when vowel precedes)
-computational → comput     (step 2: -ational→-ate, step 4: -al→∅)
-relevant     → relev       (step 4: -ant→∅ when measure>1)
-database     → databas     (step 1b: -ase→∅ after -ed removed)
-stemming     → stem        (step 3: -ing→∅)
-algorithm    → algorithm   (no suffix rules apply)
-```
-
-The implementation correctly follows the formal Porter algorithm — consonant/vowel classification, measure calculation, and CVC pattern detection are all applied.
-
-### 6.6 Stopword Filtering
-
-```bash
-Total stopwords loaded: 423  ✓
-Has "the":        true  ✓
-Has "and":        true  ✓
-Has "information": false  ✓ (correctly NOT filtered — it is indexed)
-```
-
-Stopwords are loaded into a `Set` at startup for O(1) lookup. During indexing, stopwords are never assigned word IDs and never enter the inverted index.
-
-### 6.7 Storage Layer
-
-```bash
-Database Statistics:
-  totalPages: 595
-  nextPageId: 599
-  nextWordId: 16820
-  Word entries: 16819
-
-Document Frequency (pageId = 1, "Test page"):
-  Word "test":     6 pages   ✓
-  Word "page":     151 pages  ✓ (extremely common — appears in all COMP4321 URLs)
-  Word "crawler":  2 pages   ✓ (domain-specific term)
-
-Forward Index (pageId = 1):
-  Body entries:  14  ✓ (14 unique stemmed terms)
-  Title entries:  2  ✓ ("test" and "page" — separate from body)
-
-Top Keywords (pageId = 1):
-  test:2, page:2, crawler:1, get:1, admiss:1, cse:1, depart:1, hkust:1, read:1, intern:1
-
-Link Relations (pageId = 1):
-  Children: 4  ✓
-  Parents:  4  ✓
-```
-
-The separate title index (`title:words:<pageId>`) correctly stores only title terms. Document frequency values confirm that "page" appears in 151 documents (reflecting its presence in every COMP4321 test-page URL), while domain-specific terms like "crawler" appear in only 2.
+Title matches score substantially higher than body-only matches, confirming the proportional 3.0× title boost. The boost scales with the fraction of query terms appearing in the title: `(titleMatches / numTerms) × (titleBoost − 1) × dotProduct`.
 
 ### 6.8 spider_result.txt Generation
 
@@ -583,14 +665,14 @@ The separate title index (`title:words:<pageId>`) correctly stores only title te
 $ npm run generate
 Found 297 indexed pages
 Generated ./spider_result.txt
-Total lines: 2103  (297 entries × ~7 lines each + separators)
+Total lines: 2104  ✓
 Separator count: 297  ✓
 
 Format of first entry:
   Test page
   https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm
   2023-05-16 05:03:16, 35
-  test 2; page 2; crawler 1; admiss 1; cse 1; depart 1; hkust 1; read 1; intern 1
+  test 2; page 2; crawler 1; get 1; admiss 1; cse 1; depart 1; hkust 1; read 1; intern 1
   https://www.cse.ust.hk/~kwtleung/COMP4321/ust_cse.htm
   https://www.cse.ust.hk/~kwtleung/COMP4321/news.htm
   https://www.cse.ust.hk/~kwtleung/COMP4321/books.htm
@@ -598,54 +680,26 @@ Format of first entry:
   -------------------------------------------------------------------------------
 ```
 
-The output format exactly matches the specification: title, URL, last-modified date and word count, up to 10 keyword-frequency pairs, up to 10 child links, and a 79-dash separator per entry.
+Output format: title, URL, last-modified date + word count, up to 10 keyword-frequency pairs, up to 10 child links, 79-dash separator per entry. The separator count (297) confirms one entry per indexed page.
 
-### 6.9 Word Frequency Pre-computation
-
-```bash
-$ npm run keywords  # /api/keywords endpoint
-```
-
-| Metric | Before | After | Speedup |
-|--------|--------|-------|---------|
-| Keyword browser (16,735 words) | 489ms | 12ms | **41×** |
-| Operations per lookup | O(postings) | O(1) | — |
-
-The pre-computed `word:freq:<wordId>` counters are atomically updated during add/clear operations. `getWordFrequency(wordId)` falls back to counting postings if the counter is missing (e.g., from a pre-optimization crawl).
-
-### 6.10 Inverted Index Clearing Optimization
-
-```bash
-$ npm run crawl  # re-indexes changed pages
-```
-
-| Metric | Before | After | Speedup |
-|--------|--------|-------|---------|
-| clearPageFromInvertedIndex (page 1) | 87ms | 13ms | **6.7×** |
-| Entries scanned per clear | ~16,780 (all words) | ~14 (terms on page) | — |
-
-The spider passes `wordIds` from the forward index to `clearPageFromInvertedIndex(pageId, wordIds)`, targeting only the specific postings that need removal.
-
-### 6.11 PageRank
+### 6.9 PageRank Authority Scoring
 
 ```bash
 $ npm run pagerank
-Pages in index: 595
-Iterations: 8
+Pages in index: 297
+Iterations: 56
 Converged: true
-Time: 66ms
+Sum of PR scores: 1.000000  ✓
 
 Top 5 pages by PageRank:
-  1. PR: 0.21136 | "Movie Index Page"
-  2. PR: 0.01581 | "?"
-  3. PR: 0.00499 | "books"
-  4. PR: 0.00424 | "CSE department of HKUST"
-  5. PR: 0.00365 | "Test page"
-
-Sum: 1.0000  ✓  (properly normalized)
+  1. PR: 0.44463 | "Movie Index Page"
+  2. PR: 0.00642 | "books"
+  3. PR: 0.00521 | "Test page"
+  4. PR: 0.00483 | "CSE department of HKUST"
+  5. PR: 0.00219 | "News"
 ```
 
-The power iteration converges in 8 iterations using normalized convergence checking. The "Movie Index Page" has the highest authority score (0.211), consistent with it being linked from most other pages in the COMP4321 website.
+PageRank power iteration converges correctly (Σ PR = 1.000000 by construction). The "Movie Index Page" has the highest authority score (0.445), consistent with it being the most-linked page in the COMP4321 website. The higher iteration count (56 vs. earlier runs) reflects the actual link graph topology of the current 297-page crawl. The power iteration formula `(1-d)/N + d×(linkSum + danglingSum/N)` ensures Σ PR = 1 without explicit normalization.
 
 ---
 
@@ -655,65 +709,61 @@ The power iteration converges in 8 iterations using normalized convergence check
 
 1. **Clean modular architecture**: Each component (crawler, indexer, storage, search, web) is independently testable and swappable. The data flow is linear and easy to trace.
 
-2. **Complete IR pipeline**: The system implements every core IR concept required: crawling, parsing, tokenization, stopword filtering, stemming, forward index, inverted index, TF-IDF, VSM ranking, phrase search, and title boosting.
+2. **Complete IR pipeline**: The system implements every core IR concept required: crawling, parsing, tokenization, stopword filtering, stemming, forward index, inverted index, TF-IDF, VSM ranking, phrase search, and title boosting — verified against live test results across 297 indexed pages.
 
-3. **Incremental updates**: The crawler never rebuilds from scratch, satisfying the mandatory incremental update requirement. Stale inverted index entries are properly cleaned before re-indexing.
+3. **Incremental updates**: The crawler never rebuilds from scratch. A HEAD request check skips pages whose `Last-Modified` date is unchanged. When a page is re-fetched, only its stale inverted index entries are removed before re-indexing — satisfying the mandatory incremental update requirement.
 
-4. **Robust crawler**: HEAD request optimization, retry logic, domain restriction, and cyclic link prevention work together to handle real-world web pages.
+4. **Robust crawler**: HEAD request optimization avoids redundant downloads, retry logic (3× with exponential backoff) handles transient failures, domain restriction prevents wandering, and cyclic links are caught by the visited set. Non-HTML responses are rejected at the HTTP level.
 
-5. **Full Porter Stemmer**: All 5 steps (1a–5b) with proper measure calculation, consonant/vowel classification, and CVC pattern detection — implemented from scratch without external libraries.
+5. **Full Porter Stemmer**: All 5 steps (1a–5b) implemented from scratch — including consonant/vowel classification, measure (VC) calculation, double-consonant detection, and CVC pattern matching for conditional -e restoration. Tested against 60 cases covering all rule categories.
 
-6. **Modern web interface**: AJAX-driven SPA with three-column layout, keyword browser, query history, and relevance feedback — well beyond the minimal requirements.
+6. **Modern web interface**: AJAX-driven SPA with three-column layout, loading spinner, keyword browser (with letter filters, frequency sort, pagination), query history (sessionStorage, 20 entries), and relevance feedback — well beyond the minimal requirements.
 
-7. **Well-documented code**: Every function has JSDoc comments explaining parameters, return values, and algorithmic rationale.
+7. **Extensive inline documentation**: Most exported functions have JSDoc comments documenting parameters, return types, and algorithmic rationale. Helper functions and complex logic are also annotated throughout.
 
-8. **PageRank authority scoring**: Full power iteration over the link graph with normalized convergence (8 iterations), integrated into VSM scoring with configurable weight (default 20%).
+8. **PageRank authority scoring**: Full power iteration over the link graph converges in 56 iterations (ΣPR = 1.000000 by construction). Integrated into VSM scoring with configurable weight (default 20%). The "Movie Index Page" correctly scores highest (0.445), consistent with being the most-linked hub.
 
-9. **Word frequency pre-computation**: Document frequency counters (`word:freq:<wordId>`) updated atomically at index time, changing keyword browser from O(postings) to O(1) lookup — 41× speedup.
+9. **Word frequency pre-computation**: Document frequency counters (`word:freq:<wordId>`) updated atomically in the same LevelDB batch as each posting, eliminating the need to count postings at query time — keyword browser queries go from O(postings) to O(1).
 
-10. **Optimized inverted index clearing**: `clearPageFromInvertedIndex` accepts targeted wordIds from the forward index, reducing per-page clear from O(total_postings) to O(terms_per_page) — 6.7× speedup.
+10. **Optimized inverted index clearing**: `clearPageFromInvertedIndex` accepts targeted wordIds from the forward index, reducing per-page clear from O(total_postings) to O(terms_per_page) — measured 6.7× faster (87ms → 13ms per page rebuild).
 
 ### 7.2 Weaknesses
 
-1. ~~**No PageRank**~~ → **Implemented**: PageRank power iteration with normalized convergence, integrated into VSM scoring (Section 3.9).
+1. **Sequential crawling**: The crawler processes one page at a time. With a 500ms delay, crawling 300 pages takes ~2.5 minutes. A worker pool with controlled concurrency could reduce this significantly while respecting server rate limits.
 
-2. **No parallel crawling**: The crawler processes one page at a time sequentially. With a 500ms delay, crawling 300 pages takes ~2.5 minutes. Concurrent crawling (with proper rate limiting) could reduce this to under a minute.
+2. **Simplified document length normalization**: The VSM scoring uses `max_TF` normalization per document and approximates the query magnitude as `√|query terms|`. The document magnitude is exact, but longer documents may still be slightly under- or over-represented compared to a fully normalized approach like BM25.
 
-3. **No TF-IDF normalization across documents**: The scoring uses `max_TF` normalization per document, but document length normalization (`||d||`) is simplified. This means longer documents may be unfairly penalized or rewarded.
+3. **No query expansion or synonyms**: The system finds exact term matches only. "dog" will not retrieve results for "puppy" without synonym dictionaries or latent semantic analysis.
 
-4. **No query expansion or synonyms**: The system cannot find "dog" results when searching for "puppy" without synonyms or latent semantic analysis.
+4. **No result caching**: Every search query re-computes the entire VSM scoring pipeline from scratch. Caching top-50 results for frequent queries in an LRU cache could improve response time substantially.
 
-5. **No caching layer**: Repeated queries re-compute the entire VSM scoring from scratch. Caching frequent queries could improve response time significantly.
+5. **Query parser edge case**: Exclusion terms (prefixed with `-`) appearing after a quoted phrase may lose their `-` prefix in some positions. This affects only an uncommon query pattern (e.g., `"test page" -ruby`). Single exclusions and exclusions before quoted strings work correctly.
 
-6. ~~**Inverted index cleared via O(total_postings) scan**~~ → **Optimized**: `clearPageFromInvertedIndex` now accepts wordIds from the forward index, reducing O(total_postings) to O(terms_per_page) (Section 3.8).
-
-7. ~~**Keyword browser O(postings) lookup**~~ → **Optimized**: Word frequencies pre-computed at index time as `word:freq:<wordId>` counters; API limits to 50 words/page (Section 3.7).
+6. **No spell correction**: Typos like "machin learning" return zero results instead of suggesting "machine learning". An edit-distance or trigram index would enable correction.
 
 ### 7.3 What Would Be Done Differently
 
-1. ~~**Pre-compute document frequency during indexing**~~ → **Done** (Section 3.7).
+1. **Use BM25 ranking**: BM25 provides better practical retrieval effectiveness than a simplified VSM and includes built-in document length normalization. It would replace the current cosine similarity with configurable saturation and length normalization.
 
-2. **Use a proper ranking formula**: Adopt BM25 instead of (a simplified) VSM. BM25 has proven better practical effectiveness and includes built-in document length normalization.
+2. **Concurrent crawling**: A bounded worker pool (e.g., 3–5 concurrent requests) with domain-level rate limiting would reduce crawl time dramatically while remaining respectful of target servers.
 
-3. **Implement concurrent crawling**: Use a worker pool with a configurable concurrency limit (e.g., 5 parallel requests), respecting domain-level rate limits to avoid overwhelming any single server.
+3. **Query result caching**: Cache top-50 results per query in an in-memory LRU with a TTL matching the crawler schedule. Cold-cache queries take ~100–500ms; cached queries would respond in <5ms.
 
-4. **Add query analysis and spell correction**: Implement edit-distance-based spell correction for typos (e.g., "machin learning" → "machine learning") using a trigram or Levenshtein index.
-
-5. **Pre-compute query result caches**: Cache the top-50 results for common queries in Redis or an in-memory LRU cache, with TTL matching the crawler schedule.
+4. **Spell correction**: Build a trigram or Levenshtein index over indexed words. For out-of-vocabulary query terms, suggest the closest indexed word and offer to re-search.
 
 ### 7.4 Interesting Future Features
 
-1. **Latent Semantic Analysis (LSA)**: Build a term-document matrix, apply SVD, and use latent concepts for retrieval. This enables finding semantically related documents even when no terms overlap.
+1. **Semantic retrieval (LSA/word2vec)**: Build a term-document matrix, apply truncated SVD, and retrieve using latent concept similarity. This would enable finding semantically related documents even with zero term overlap.
 
-2. **PageRank visualization**: Display the link graph as an interactive network diagram showing which pages are most "authoritative" based on incoming links.
+2. **PageRank visualization**: Render the link graph as an interactive network diagram. Node size reflects PageRank authority; edges show parent→child relationships. Zoom and filter by subgraph.
 
-3. **Personalized results**: Track user query history in `localStorage`, learn term preferences, and boost documents similar to previously clicked results.
+3. **Personalized results**: Track which results a user clicks in `localStorage`. Boost documents similar to previously clicked pages on subsequent searches within the same session.
 
-4. **Snippet generation**: Extract and highlight query terms from document body text to create informative result snippets, similar to Google search result descriptions.
+4. **Result snippets**: Extract a 2–3 sentence passage from each document that contains query terms, highlighted and truncated to ~160 characters. Similar to Google search result descriptions.
 
-5. **Temporal search**: Allow filtering results by the page's `lastModified` date, useful for finding recent information.
+5. **Temporal search filters**: Allow users to filter results by the page's `lastModified` date — e.g., "results from the last week" or "results from 2023". Useful for finding recent or historical information.
 
-6. **Multilingual support**: Extend the tokenizer and stemmer for Chinese (word segmentation), Arabic (stemming), and other languages with different morphological characteristics.
+6. **Multilingual support**: Extend the tokenizer with language detection and language-specific processing: Chinese word segmentation (jieba), Arabic stemmer, and non-Latin script handling.
 
 ---
 
