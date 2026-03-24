@@ -1,8 +1,7 @@
 /**
  * Page Processor
- * Parses HTML pages using Cheerio to extract:
- * - Title, body text, links
- * - Keyword positions in both title and body
+ * Functions are to parse HTML pages using Cheerio which extracts
+ *   Title, Body Text, Links, and Keyword Positions
  */
 
 import * as cheerio from 'cheerio';
@@ -16,7 +15,6 @@ import { URL } from 'url';
  * @returns {string} - Page title
  */
 export function extractTitle($) {
-  // Try to get title from <title> tag
   let title = $('title').first().text().trim();
   
   // Fallback to first h1 if no title tag
@@ -29,7 +27,7 @@ export function extractTitle($) {
     title = $('h2').first().text().trim();
   }
   
-  return title || 'Untitled';
+  return text.split(/\s+/).filter(w => w.length > 0) || 'Untitled';
 }
 
 /**
@@ -38,13 +36,10 @@ export function extractTitle($) {
  * @returns {string} - Body text
  */
 export function extractBodyText($) {
-  // Remove script, style, nav, footer, header tags
+  // Remove script, style, nav, footer, header tags before extracting the information
   $('script, style, nav, footer, header, noscript').remove();
   
-  // Get text from body
   let text = $('body').text();
-  
-  // Clean up whitespace
   text = text.replace(/\s+/g, ' ').trim();
   
   return text;
@@ -52,6 +47,7 @@ export function extractBodyText($) {
 
 /**
  * Extract all hyperlinks from the page
+ * Resolves the relative paths from the absolute URLs from the base URL
  * @param {cheerio.CheerioAPI} $ - Cheerio instance
  * @param {string} baseUrl - Base URL for resolving relative links
  * @returns {string[]} - Array of absolute URLs
@@ -61,26 +57,17 @@ export function extractLinks($, baseUrl) {
   const seen = new Set();
   
   $('a[href]').each((_, element) => {
+    // Filters out Anchors, Javascript, Mailto, Tel, and Duplicates
     let href = $(element).attr('href');
     
     if (!href) return;
-    
-    // Skip anchors, javascript, mailto, tel
-    if (href.startsWith('#') || 
-        href.startsWith('javascript:') || 
-        href.startsWith('mailto:') ||
-        href.startsWith('tel:')) {
-      return;
-    }
+  
+    if (!filterUrl(href)) return;
     
     try {
-      // Resolve relative URLs
       const absoluteUrl = new URL(href, baseUrl).href;
-      
-      // Remove fragment
       const cleanUrl = absoluteUrl.split('#')[0];
       
-      // Only include http(s) URLs
       if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
         if (!seen.has(cleanUrl)) {
           seen.add(cleanUrl);
@@ -95,6 +82,20 @@ export function extractLinks($, baseUrl) {
   return links;
 }
 
+function filterUrl(linkString) {
+  try {
+    const url = new URL(linkString);
+    // filter out opaque schemes like mailto: or javascript:
+    if (url.protocol === 'mailto:' || url.protocol === 'javascript:') return false;
+    // absolute links must be http or https
+    if (url.protocol === 'http:' || url.protocol === 'https:') return true;
+    return false;
+  } catch (e) {
+    // relative URL – treat as wanted (will be resolved later)
+    return true;
+  }
+}
+
 /**
  * Get page size (number of words)
  * @param {string} text - Page text content
@@ -107,6 +108,9 @@ export function getPageSize(text) {
 
 /**
  * Process an HTML page and extract all required information
+ * Main entry point of page processing
+ * 
+ * Returns object with Title, URL, Links, Text, Keywords
  * @param {string} html - Raw HTML content
  * @param {string} url - Page URL
  * @param {string} lastModified - Last modified date string
@@ -115,54 +119,31 @@ export function getPageSize(text) {
  */
 export function processPage(html, url, lastModified = null, contentLength = null) {
   const $ = cheerio.load(html);
-  
-  // Extract title
+
   const title = extractTitle($);
-  
-  // Extract title text for indexing (separate from body)
   const titleText = $('title').first().text().trim() || title;
-  
-  // Extract body text
   const bodyText = extractBodyText($);
-  
-  // Calculate size (number of words)
   const fullText = titleText + ' ' + bodyText;
   const size = getPageSize(fullText);
-  
-  // Extract links
+
   const links = extractLinks($, url);
   
-  // Process title text for keyword extraction
   const titleProcessed = processText(titleText);
-  
-  // Process body text for keyword extraction
   const bodyProcessed = processText(bodyText);
   
-  // Combine all stemmed words for statistics
-  const allStemmed = [...titleProcessed.stemmed, ...bodyProcessed.stemmed];
-  const combinedTF = calculateTF(allStemmed);
-  const topKeywords = getTopFrequentWords(combinedTF, CONFIG.indexer.maxKeywords);
+  const topKeywords = getTopFrequentWords(
+    calculateTF([...titleProcessed.stemmed, ...bodyProcessed.stemmed]),
+    CONFIG.indexer.maxKeywords
+  );
   
-  // Build word entries with positions for body
   const bodyWordEntries = [];
-  const bodyWordMap = new Map(); // wordId -> entry (will be filled by indexer)
-  
   for (const [word, positions] of bodyProcessed.positions) {
-    bodyWordEntries.push({
-      word,
-      positions,
-      tf: positions.length
-    });
+    bodyWordEntries.push({word, positions, tf: positions.length});
   }
-  
-  // Build word entries for title
+
   const titleWordEntries = [];
   for (const [word, positions] of titleProcessed.positions) {
-    titleWordEntries.push({
-      word,
-      positions,
-      tf: positions.length
-    });
+    titleWordEntries.push({word, positions, tf: positions.length});
   }
   
   return {
@@ -177,8 +158,7 @@ export function processPage(html, url, lastModified = null, contentLength = null
     bodyProcessed,
     bodyWordEntries,
     titleWordEntries,
-    topKeywords,
-    combinedTF
+    topKeywords
   };
 }
 
