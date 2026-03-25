@@ -31,7 +31,7 @@ async function main() {
   for (let i = 0; i < Math.min(10, scores.length); i++) {
     const { id, score } = scores[i];
     const pageData = await db.getPageData(id);
-    console.log(`  ${i + 1}. PR: ${score.toFixed(5)} | "${(pageData?.title || '?').substring(0, 50)}"`);
+    console.log(`  ${i + 1}. PR: ${score.toFixed(5)} | "${String(pageData?.title ?? '?').substring(0, 50)}"`);
   }
   
   console.log(`\nMin PR: ${scores[scores.length - 1].score.toFixed(6)}`);
