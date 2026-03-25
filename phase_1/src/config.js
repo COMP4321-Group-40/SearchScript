@@ -4,10 +4,10 @@ export const CONFIG = {
   // Crawler settings
   crawler: {
     seedUrl: 'https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm',
-    backupUrl: 'https://comp4321-hkust.github.io/testpages/testpage.htm',
+    backupUrl: 'https://hitcslj.github.io/TestPages/testpage.htm',
     maxPages: 30, // Phase 1: 30 pages
     requestTimeout: 15000, // 15 seconds
-    requestDelay: 500, // 500ms delay between requests
+    requestDelay: 10, // 10ms delay between requests
     userAgent: 'COMP4321-SearchEngine/1.0',
     maxRetries: 3
   },

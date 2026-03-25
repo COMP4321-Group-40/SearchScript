@@ -1,6 +1,6 @@
 # COMP4321 Search Engine — Phase 1
 
-Spider (Crawler) and Indexer for COMP4321 course project at HKUST.
+Spider (Crawler) and Indexer for COMP4321 course project.
 
 ## Prerequisites
 
@@ -48,7 +48,8 @@ npm run crawl
 ```
 
 This will:
-1. Start BFS crawling from the seed URL (`https://www.cse.ust.hk/~kwtleung/COMP4321/testpage.htm`)
+1. Start BFS crawling from the seed URL (`https://hitcslj.github.io/TestPages/testpage.htm`) 
+and backup URL (`https://hitcslj.github.io/TestPages/testpage.htm`) both of which can be modified in config.js
 2. For each page: fetch HTML, extract title, extract body text, extract links
 3. Process text: tokenize → filter stopwords → apply Porter stemming
 4. Store in LevelDB: URL↔ID mapping, page metadata, forward index, inverted index, title words, parent/child links, keyword statistics
@@ -85,7 +86,7 @@ Child link 2
 4. **Visited Set**: Prevents re-processing and cyclic links
 5. **Domain Restriction**: Only crawls pages within the same domain as the seed URL
 6. **Retry Logic**: Failed requests (404s, timeouts) retried up to 3 times
-7. **Rate Limiting**: 500ms delay between requests
+7. **Rate Limiting**: 10ms delay between requests
 
 ### LevelDB Schema
 
@@ -127,12 +128,3 @@ Child link 2
 |---------|-------------|
 | `npm run crawl` | Crawl and index up to 30 pages |
 | `npm run generate` | Generate `spider_result.txt` |
-| `npm test` | Alias for `npm run generate` |
-
-## Constraints
-
-- No external NLP libraries (Lucene, `natural`, ElasticSearch)
-- Porter Stemmer and stopword filtering implemented from scratch
-- Cyclic links handled via visited set
-- Maximum 30 pages indexed
-- Incremental updates mandatory — TAs will run the crawler multiple times to test robustness
