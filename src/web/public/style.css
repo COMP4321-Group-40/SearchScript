@@ -250,8 +250,41 @@ body {
 }
 .result-rank { color: #9aa0a6; font-size: 0.85rem; font-weight: 700; min-width: 24px; }
 .result-score {
+  position: relative;
+  cursor:help;
+  border-bottom: 1px dotted #aaa;
   background: #e8f0fe; color: #1a73e8; font-size: 0.72rem;
   padding: 2px 8px; border-radius: 10px; font-weight: 700;
+}
+
+.result-score:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: #1e1e2f;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: normal;
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  pointer-events: none;
+  margin-bottom: 6px;
+  border: 1px solid #444;
+}
+
+.result-score:hover::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 10px;
+  border: 6px solid transparent;
+  border-top-color: #1e1e2f;
+  margin-bottom: -6px;
+  pointer-events: none;
 }
 
 .similar-btn {

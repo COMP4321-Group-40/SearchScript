@@ -177,11 +177,17 @@
 
     let html = `<div class="results-info-row">${parseInfo}</div><div class="results-list">`;
     data.results.forEach((r, i) => {
+      const details = [];
+      if (r.tfidfScore !== undefined) details.push(`TF‑IDF: ${r.tfidfScore.toFixed(4)}`);
+      if (r.cosineScore !== undefined) details.push(`Cosine: ${r.cosineScore.toFixed(4)}`);
+      if (r.pagerankScore !== undefined) details.push(`PageRank: ${r.pagerankScore.toFixed(4)}`);
+      if (r.titleBoost !== undefined) details.push(`Title Boost: ${r.titleBoost ? 'Yes' : 'No'}`);
+      const tooltipText = details.length ? details.join(' · ') : 'No detailed scores';
       html += `
       <div class="result-card" id="result-${r.pageId}">
         <div class="result-card__header">
           <span class="result-rank">${i+1}</span>
-          <span class="result-score">${r.score.toFixed(4)}</span>
+          <span class="result-score" data-tooltip="${escHtml(tooltipText)}">${r.score.toFixed(4)}</span>
           <button class="similar-btn" onclick="window.__similar(${r.pageId}, ${JSON.stringify(r.keywords || []).replace(/"/g, '&quot;')})" title="Search with top keywords from this page">Get Similar</button>
         </div>
         <h2 class="result-title"><a href="${r.url}" target="_blank" rel="noopener">${escHtml(r.title)}</a></h2>

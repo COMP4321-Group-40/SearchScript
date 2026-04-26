@@ -293,13 +293,47 @@ export async function search(queryString) {
 
   const queryMagnitude = Math.sqrt(terms.length);
   const hasTerms = queryMagnitude > 0;
-  const scored = [];
   const prWeight = CONFIG.search.pagerankWeight || 0;
-  let maxPR = 0;
+
+  // Store raw components for each document
+  const docComponents = new Map();
 
   for (const [pageId, entry] of docScores) {
+    let rawCosine = 0;
+    let dotProduct = 0;
+    let magnitude = 0;
+    let titleBoostBool = false;
+
     if (hasTerms) {
-      const { magnitude, dotProduct } = await computeDocScore(pageId, totalDocs, terms);
+      const { magnitude: mag, dotProduct: dot } = await computeDocScore(pageId, totalDocs, terms);
+      magnitude = mag;
+      dotProduct = dot;
+      if (magnitude > 0) {
+        rawCosine = dotProduct / (queryMagnitude * magnitude);
+      }
+      // Fix: assign to titleBoostBool
+      titleBoostBool = (entry.titleMatches > 0) || (entry.phraseTitleBoost > 0);
+    } else {
+      rawCosine = 0;
+      titleBoostBool = (entry.phraseTitleBoost > 0);
+    }
+
+    docComponents.set(pageId, {
+      rawCosine,
+      dotProduct,
+      magnitude,
+      titleBoostBool,
+      phraseBodyBoost: entry.phraseBodyBoost,
+      phraseTitleBoost: entry.phraseTitleBoost,
+      titleMatches: entry.titleMatches
+    });
+  }
+
+  // Compute boosted scores (same as original logic)
+  const scored = [];
+  for (const [pageId, entry] of docScores) {
+    if (hasTerms) {
+      const { magnitude, dotProduct } = docComponents.get(pageId);
       if (magnitude === 0) continue;
       const titleBoost = (entry.titleMatches / terms.length) * (CONFIG.search.titleBoost - 1) * dotProduct;
       const cosineScore = (dotProduct + titleBoost + entry.phraseBodyBoost + entry.phraseTitleBoost) / (queryMagnitude * magnitude);
@@ -310,6 +344,10 @@ export async function search(queryString) {
     }
   }
 
+  if (scored.length === 0) return [];
+
+  // Apply PageRank weighting (if enabled)
+  let maxPR = 0;
   if (prWeight > 0) {
     for (const { pageId } of scored) {
       const pr = await db.getPageRank(pageId);
@@ -324,12 +362,27 @@ export async function search(queryString) {
     }
   }
 
-  scored.sort((a, b) => b.score - a.score);
-  const topResults = scored.slice(0, CONFIG.search.maxResults);
+  // Build final results with component scores
+  const finalResults = [];
+  for (const item of scored) {
+    const comp = docComponents.get(item.pageId);
+    finalResults.push({
+      pageId: item.pageId,
+      finalScore: item.score,
+      rawCosine: comp.rawCosine,
+      dotProduct: comp.dotProduct,
+      titleBoostBool: comp.titleBoostBool,
+      pagerankNorm: (prWeight > 0 && maxPR > 0) ? (await db.getPageRank(item.pageId) || 0) / maxPR : 0
+    });
+  }
+
+  // Sort by final score
+  finalResults.sort((a, b) => b.finalScore - a.finalScore);
+  const topResults = finalResults.slice(0, CONFIG.search.maxResults);
 
   // Build result objects with page data
   const results = [];
-  for (const { pageId, score } of topResults) {
+  for (const { pageId, finalScore, rawCosine, dotProduct, titleBoostBool, pagerankNorm } of topResults) {
     const pageData = await db.getPageData(pageId);
     if (!pageData) continue;
 
@@ -341,7 +394,7 @@ export async function search(queryString) {
     const parentUrls = (await Promise.all(parentIds.map(id => db.getUrlByPageId(id)))).filter(Boolean);
 
     results.push({
-      score: Math.round(score * 10000) / 10000,
+      score: Math.round(finalScore * 10000) / 10000,
       pageId,
       title: pageData.title,
       url: pageData.url,
@@ -349,7 +402,12 @@ export async function search(queryString) {
       size: pageData.size,
       keywords: (keywords || []).slice(0, 5),
       childUrls: childUrls.slice(0, 10),
-      parentUrls: parentUrls.slice(0, 10)
+      parentUrls: parentUrls.slice(0, 10),
+      // Component scores for tooltip
+      tfidfScore: Math.round(dotProduct * 10000) / 10000,
+      cosineScore: Math.round(rawCosine * 10000) / 10000,
+      pagerankScore: Math.round(pagerankNorm * 10000) / 10000,
+      titleBoost: titleBoostBool
     });
   }
 

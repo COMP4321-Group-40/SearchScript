@@ -203,7 +203,10 @@ The right sidebar tracks recent searches in `sessionStorage` (up to 20 entries).
 ### 6. Get Similar Pages (Relevance Feedback)
 Each result card has a "Similar" button that implements Rocchio-style pseudo relevance feedback: extracts the top 5 most frequent keywords from the result, reformulates the query, and auto-submits.
 
-### 7. REST API
+### 7. FUll Score Breakdown
+Each result card will show the total similiarity score. Hover over the feature can display the full breakdown of how each individual scores affected total similiarity. 
+
+### 8. REST API
 The server exposes JSON endpoints for programmatic access:
 
 | Endpoint | Description |
