@@ -2,6 +2,8 @@
 
 A web-based search engine built with Node.js, implementing a full crawl-index-search pipeline. Developed as a course project for COMP4321 (Information Retrieval and Web Search) at HKUST.
 
+Each person contributed equally to the project. 
+
 ## Setup & Running
 
 **Step 1 — Install dependencies:**

@@ -213,10 +213,22 @@
   };
 
   window.addKeyword = function(word) {
+    const input = searchInput; 
     const cur = searchInput.value.trim();
-    if (cur) searchInput.value = cur + ' ' + word;
-    else searchInput.value = word;
-    searchInput.focus();
+    let newValue, start, end;
+
+    if (cur) {
+      newValue = cur + ' ' + word;
+      start = cur.length+1;
+      end = start+word.length;
+    } else {
+      newValue = word;
+      start = 0;
+      end = word.length;
+    }
+    input.value = newValue;
+    input.focus();
+    input.setSelectionRange(start, end);
   };
 
   // ========== Query History ==========
